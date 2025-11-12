@@ -59,10 +59,11 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-  participant Source as "My source"
-#  participant Target as "Target+acquired"
+  participant A as "Alice"
+  participant B as "Bob"
+  participant E as "Eve"
   
-#  Source->>Target: some target
+  A->>B: key exchange
 ```
 
 
@@ -77,16 +78,16 @@ sequenceDiagram
   participant PAY as "Payout Aggregator"
   participant Creators
 
-  User->>Client: Play media
-  Client->>IDX: Submit perceptual FP
-  IDX-->>Client: work_id, price/min, region
-  Client->>Client: Enforce price threshold; record session minutes
-  Client->>WAL: Monthly ZK proof (commitments)
-  WAL->>CH: submitConsumption(commitments, zkProof)
-  CH-->>PAY: Emit epoch events
-  PAY->>CH: commit DAPR allocations (Merkle root)
-  CH-->>Creators: Balances updated (per work)
-  Creators->>CH: withdraw(work_id) → auto-split
+  User ->> Client: Play media
+  Client ->> IDX: Submit perceptual FP
+  IDX -->> Client: work_id, price/min, region
+  Client ->> Client: Enforce price threshold and record session minutes
+  Client ->> WAL: Monthly ZK proof (commitments)
+  WAL ->> CH: submitConsumption(commitments, zkProof)
+  CH -->> PAY: Emit epoch events
+  PAY ->> CH: commit DAPR allocations (Merkle root)
+  CH -->> Creators: Balances updated (per work)
+  Creators ->> CH: withdraw(work_id) → auto-split
 ```
 
 ### 3.2 Work Registration
@@ -95,11 +96,11 @@ sequenceDiagram
 sequenceDiagram
   participant Creator
   participant Portal
-  participant REG as "Work Registry"
-  participant CH as "CWE Chain"
+  participant REG as Work Registry
+  participant CH as CWE Chain
 
-  Creator->>Portal: Upload media \+ metadata
-  Portal->>Portal: Compute FP; build split graph; sign
+  Creator->>Portal: Upload media + metadata
+  Portal->>Portal: Compute FPi, build split graph, sign
   Portal->>REG: registerWork(work_id, splits, price)
   REG->>CH: On-chain record + event
 ```
@@ -110,12 +111,12 @@ sequenceDiagram
 sequenceDiagram
   participant User
   participant Arb as Arbitration
-  participant GOV as "Governance DAO"
+  participant GOV as Governance DAO
   participant CH as Chain
 
   User->>Arb: File case (evidence CIDs)
   Arb->>GOV: Jury selection + hearing
-  GOV->>CH: Verdict anchor (blacklist hash; disable key)
+  GOV->>CH: Verdict anchor (blacklist hash, disable key)
 ```
 
 ---
