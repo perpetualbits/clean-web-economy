@@ -57,15 +57,6 @@ flowchart LR
 
 ### 3.1 Playback & Settlement
 
-```mermaid
-sequenceDiagram
-  participant A as "Alice"
-  participant B as "Bob"
-  participant E as "Eve"
-  
-  A->>B: key exchange
-```
-
 
 ```mermaid
 sequenceDiagram
