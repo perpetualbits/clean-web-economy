@@ -12,24 +12,24 @@
 
 ```mermaid
 flowchart LR
-  U[Users (Consumers)] -- play/browse --> BX[Browser Ext]
-  U2[Users (Players/Mobile)] -- play --> MP[Media Player Plugin]
-  CR[Creators] -- sign/publish --> CP[Creator Portal]
-  BX --> DH[Discovery Hub]
+  U["Users (Consumers)"] -- play/browse --> BX["Browser Ext"]
+  U2["Users (Players/Mobile)"] -- play --> MP["Media Player Plugin"]
+  CR[Creators] -- sign/publish --> CP["Creator Portal"]
+  BX --> DH["Discovery Hub"]
   MP --> DH
-  DH <-- query/resolve --> FPR[Fingerprint Index]
-  BX --> WAL[Wallet + ZK]
+  DH <-- query/resolve --> FPR["Fingerprint Index"]
+  BX --> WAL["Wallet + ZK"]
   MP --> WAL
-  WAL --> CHAIN[(CWE Chain)]
-  CP --> REG[Work Registry]
+  WAL --> CHAIN[("CWE Chain")]
+  CP --> REG["Work Registry"]
   REG --> CHAIN
-  DH --> IPFS[(IPFS/Bittorrent)]
+  DH --> IPFS[("IPFS/Bittorrent")]
   MP --> IPFS
   BX --> IPFS
-  GOV[Governance DAO] <-- events/decisions --> CHAIN
+  GOV["Governance DAO"] <-- events/decisions --> CHAIN
   AUD[Auditors] --> GOV
   ARB[Arbitration] --> GOV
-  DMF[Distributed Microservices Fabric] <--> CP
+  DMF["Distributed Microservices Fabric"] <--> CP
   DMF <--> U
 ```
 
@@ -59,13 +59,23 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
+  participant Source as "My source"
+#  participant Target as "Target+acquired"
+  
+#  Source->>Target: some target
+```
+
+
+```mermaid
+sequenceDiagram
   participant User
-  participant Client as Client (Ext/Player)
-  participant Hub as Discovery Hub
-  participant IDX as Fingerprint Index
-  participant WAL as Wallet+ZK
-  participant CH as CWE Chain
-  participant PAY as Payout Aggregator
+  participant Client as "Client (Ext/Player)"
+  participant Hub as "Discovery Hub"
+  participant IDX as "Fingerprint Index"
+  participant WAL as "Wallet\+ZK"
+  participant CH as "CWE Chain"
+  participant PAY as "Payout Aggregator"
+  participant Creators
 
   User->>Client: Play media
   Client->>IDX: Submit perceptual FP
@@ -85,10 +95,10 @@ sequenceDiagram
 sequenceDiagram
   participant Creator
   participant Portal
-  participant REG as Work Registry
-  participant CH as CWE Chain
+  participant REG as "Work Registry"
+  participant CH as "CWE Chain"
 
-  Creator->>Portal: Upload media + metadata
+  Creator->>Portal: Upload media \+ metadata
   Portal->>Portal: Compute FP; build split graph; sign
   Portal->>REG: registerWork(work_id, splits, price)
   REG->>CH: On-chain record + event
@@ -100,7 +110,7 @@ sequenceDiagram
 sequenceDiagram
   participant User
   participant Arb as Arbitration
-  participant GOV as Governance DAO
+  participant GOV as "Governance DAO"
   participant CH as Chain
 
   User->>Arb: File case (evidence CIDs)
