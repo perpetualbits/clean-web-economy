@@ -1,0 +1,5 @@
+GNU Affero General Public License v3.0
+
+SPDX‑License‑Identifier: AGPL‑3.0‑only
+
+For the full license text, see https://www.gnu.org/licenses/agpl-3.0.en.html

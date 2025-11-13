@@ -1,0 +1,28 @@
+openapi: 3.0.3
+info:
+  title: CWE Discovery Hub API
+  version: 0.1.0
+paths:
+  /resolve:
+    post:
+      summary: Resolve fingerprint to work metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fp:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  work_id: { type: string }
+                  price_per_min: { type: number }
+                  region: { type: string }

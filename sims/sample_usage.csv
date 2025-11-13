@@ -1,0 +1,5 @@
+user_id,work_id,minutes,price_per_min,region_factor
+u1,wA,120,1.2,1.0
+u1,wB,30,0.6,1.0
+u2,wA,10,1.2,1.0
+u2,wC,90,2.5,0.9

@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  hardhat:
+    image: ghcr.io/foundry-rs/foundry:latest
+    command: anvil -p 8545
+    ports: ["8545:8545"]
+  discovery-hub:
+    image: ghcr.io/yourorg/discovery-hub:dev
+    environment:
+      - PORT=8080
+    ports: ["8080:8080"]
