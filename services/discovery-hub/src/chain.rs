@@ -35,12 +35,15 @@ pub struct OnChainWork {
 
 /// A read-only view of the work registry. Abstracted for testability.
 ///
-/// Uses a native `async fn`; this crate has no `dyn RegistryView` use, so the
-/// auto-trait limitation the lint warns about does not apply here.
-#[allow(async_fn_in_trait)]
+/// The future must be `Send` so that `validate_ingest`, generic over this
+/// trait, can itself be awaited from a multi-threaded runtime (e.g. an axum
+/// handler).
 pub trait RegistryView {
     /// Look up a work; `Ok(None)` means it is not registered.
-    async fn lookup(&self, work_id: Bytes32) -> Result<Option<OnChainWork>, String>;
+    fn lookup(
+        &self,
+        work_id: Bytes32,
+    ) -> impl std::future::Future<Output = Result<Option<OnChainWork>, String>> + Send;
 }
 
 /// Errors that reject a manifest at ingest.
@@ -259,5 +262,59 @@ mod tests {
             validate_ingest(&m, &sig.as_bytes(), &reg).await,
             Err(IngestError::Unregistered)
         ));
+    }
+
+    #[tokio::test]
+    async fn creator_mismatch_is_rejected() {
+        let signer = PrivateKeySigner::random();
+        let other = PrivateKeySigner::random();
+        // The manifest's creator_id disagrees with the signer/registrant.
+        let mut m = manifest(signer.address());
+        m.creator_id = other.address();
+        let sig = signer
+            .sign_message_sync(&m.canonical_bytes().unwrap())
+            .unwrap();
+        let reg = FakeRegistry(Some(OnChainWork {
+            registrant: signer.address(),
+            price_per_min: 1_000_000,
+            region: Bytes32([7; 32]),
+        }));
+        assert!(matches!(
+            validate_ingest(&m, &sig.as_bytes(), &reg).await,
+            Err(IngestError::CreatorMismatch)
+        ));
+    }
+
+    #[tokio::test]
+    async fn region_mismatch_is_rejected() {
+        let signer = PrivateKeySigner::random();
+        let m = manifest(signer.address());
+        let sig = signer
+            .sign_message_sync(&m.canonical_bytes().unwrap())
+            .unwrap();
+        let reg = FakeRegistry(Some(OnChainWork {
+            registrant: signer.address(),
+            price_per_min: 1_000_000,
+            region: Bytes32([9; 32]), // differs from the manifest
+        }));
+        assert!(matches!(
+            validate_ingest(&m, &sig.as_bytes(), &reg).await,
+            Err(IngestError::RegionMismatch)
+        ));
+    }
+
+    /// Compile-time assertion that a value's type is `Send`.
+    fn assert_send<T: Send>(_: &T) {}
+
+    #[test]
+    fn validate_ingest_future_is_send() {
+        // If `validate_ingest`'s future were not `Send`, this would fail to
+        // compile — which is exactly what Task 6's axum handler requires.
+        let signer = PrivateKeySigner::random();
+        let m = manifest(signer.address());
+        let sig = [0u8; 65];
+        let reg = FakeRegistry(None);
+        let fut = validate_ingest(&m, &sig, &reg);
+        assert_send(&fut);
     }
 }
