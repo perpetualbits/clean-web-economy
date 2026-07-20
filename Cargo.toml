@@ -23,8 +23,11 @@ members = [
     "libs/wallet-zk",     # WP4 — wallet, commitments, session accounting
     "sims",               # WP2 — DAPR payout-math reference crate
     "services/settlement",  # WP5 — off-chain epoch settlement job
-    # "clients/browser-ext/core" # WP6 — added when the extension core lands
 ]
+
+# The browser-extension core is a wasm crate built by wasm-pack (not the native
+# workspace build), so it is excluded here and declares its own workspace.
+exclude = ["clients/browser-ext/core"]
 
 # ---------------------------------------------------------------------------
 # Shared package metadata. Individual crates inherit these with

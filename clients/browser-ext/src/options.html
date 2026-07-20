@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- Options page: configure the devnet connection and contract addresses. -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font: 13px sans-serif; max-width: 420px; padding: 16px; }
+      h1 { font-size: 15px; }
+      label { display: block; margin: 10px 0 2px; }
+      input { width: 100%; box-sizing: border-box; }
+      button { margin-top: 12px; padding: 6px 12px; cursor: pointer; }
+      #status { margin-top: 8px; color: #444; }
+    </style>
+  </head>
+  <body>
+    <h1>CWE Player — settings</h1>
+
+    <label for="rpcUrl">RPC URL</label>
+    <input id="rpcUrl" type="text" placeholder="http://127.0.0.1:8545" />
+
+    <label for="consumption">CWEConsumption address</label>
+    <input id="consumption" type="text" placeholder="0x…" />
+
+    <label for="tierId">Tier id (bytes32)</label>
+    <input id="tierId" type="text" placeholder="0x… (keccak256 of tier name)" />
+
+    <label for="privateKey">Signer private key (devnet only)</label>
+    <input id="privateKey" type="password" placeholder="0x…" />
+
+    <button id="save">Save settings</button>
+    <div id="status"></div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

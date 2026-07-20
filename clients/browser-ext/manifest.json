@@ -2,10 +2,31 @@
   "manifest_version": 3,
   "name": "CWE Player",
   "version": "0.1.0",
+  "description": "Clean Web Economy client: recognises works, accounts usage locally, and settles per epoch.",
   "permissions": ["storage"],
-  "background": {"service_worker": "src/background.ts"},
-  "content_scripts": [{
-    "matches": ["<all_urls>"],
-    "js": ["src/content-script.ts"]
-  }]
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://localhost/*", "http://127.0.0.1/*"],
+      "js": ["content-script.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "CWE Player"
+  },
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["cwe_ext_core_bg.wasm"],
+      "matches": ["http://localhost/*", "http://127.0.0.1/*"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
 }

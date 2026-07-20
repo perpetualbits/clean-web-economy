@@ -73,3 +73,47 @@ jobs:
       # Run the Solidity test suite (`*.t.sol`).
       - name: Test
         run: forge test -vvv
+
+  # ---------------------------------------------------------------------------
+  # Browser extension: build the WASM core + JS bundle and run the unit tests.
+  # (The Playwright e2e needs a full Chromium download and is run separately.)
+  # ---------------------------------------------------------------------------
+  extension:
+    name: Extension (WASM build + unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/browser-ext
+    steps:
+      - uses: actions/checkout@v4
+
+      # Rust with the wasm target, for wasm-pack to compile the core.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # wasm-pack turns the Rust core into a JS/WASM module.
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Reproducible install, then build (wasm + bundle) and run unit tests.
+      - name: Install deps
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Unit tests
+        run: npm test
+
+      # Publish the built extension as a downloadable artifact.
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cwe-browser-ext
+          path: clients/browser-ext/dist

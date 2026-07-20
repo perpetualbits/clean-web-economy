@@ -1,0 +1,35 @@
+# WP6 — the browser extension's Rust core, compiled to WebAssembly.
+#
+# The MV3 extension shell (service worker, content script, popup) must be
+# JavaScript — that is the browser's requirement and the "something else is really
+# needed" exception in the plan. Everything with real logic, though, lives here in
+# Rust and is shared with the rest of the workspace: fingerprinting (WP3),
+# commitments and session accounting (WP4). wasm-pack turns this crate into a JS
+# module the shell imports.
+
+# Declared as its own workspace root so wasm-pack builds it standalone, decoupled
+# from the native Cargo workspace at the repo root.
+[workspace]
+
+[package]
+name = "cwe-ext-core"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later OR MPL-2.0"
+repository = "https://github.com/perpetualbits/clean-web-economy"
+description = "WebAssembly core (fingerprint, commitments, sessions) for the CWE browser extension"
+
+[lib]
+# cdylib for the wasm build; rlib so it can also be compiled/tested natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"           # the Rust <-> JS binding layer
+cwe-fingerprint = { path = "../../../libs/fingerprint" }
+cwe-wallet-zk = { path = "../../../libs/wallet-zk" }
+serde_json = "1"               # (de)serialise session snapshots and flush output
+
+# Optimise the wasm for size — a smaller module loads faster in the browser.
+[profile.release]
+opt-level = "s"
+lto = true

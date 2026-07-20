@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Popup UI: set the price cap and trigger epoch settlement. Styling is inline
+     to satisfy the strict extension CSP (no external stylesheets). -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font: 13px sans-serif; width: 260px; padding: 12px; }
+      h1 { font-size: 14px; margin: 0 0 8px; }
+      label { display: block; margin: 8px 0 2px; }
+      input { width: 100%; box-sizing: border-box; }
+      button { margin-top: 10px; width: 100%; padding: 6px; cursor: pointer; }
+      #status { margin-top: 8px; color: #444; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>CWE Player</h1>
+
+    <label for="threshold">Price cap (per minute, 0 = no cap)</label>
+    <input id="threshold" type="number" min="0" step="1" />
+    <button id="save">Save cap</button>
+
+    <button id="settle">Settle epoch</button>
+    <button id="export">Export openings</button>
+
+    <div id="status"></div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

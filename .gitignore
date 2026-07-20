@@ -19,6 +19,12 @@ chain/broadcast
 clients/browser-ext/dist
 clients/browser-ext/pkg
 
+# --- Node / JS tooling ------------------------------------------------------
+node_modules
+# Playwright's downloaded browsers and run artifacts.
+clients/browser-ext/test-results
+clients/browser-ext/playwright-report
+
 # --- Editor / OS noise ------------------------------------------------------
 *.swp
 .DS_Store

@@ -1,0 +1,21 @@
+{
+  "name": "cwe-browser-ext",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Clean Web Economy MV3 browser extension (Rust/WASM core + JS shell).",
+  "scripts": {
+    "build:wasm": "wasm-pack build core --target web --out-dir ../pkg",
+    "build:js": "node build.mjs",
+    "build": "npm run build:wasm && npm run build:js",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "@playwright/test": "^1.48.0"
+  }
+}
