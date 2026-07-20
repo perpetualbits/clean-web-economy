@@ -326,4 +326,58 @@ mod tests {
         let loaded = Index::load_snapshot(&path).unwrap();
         assert_eq!(loaded.resolve("fp:a").unwrap().work_id, Bytes32([1; 32]));
     }
+
+    /// Re-keying a work_id to a new fingerprint drops the stale fingerprint entry.
+    #[test]
+    fn upsert_rekey_drops_stale_fingerprint() {
+        let mut idx = Index::new();
+        idx.upsert(manifest(1, "fp:aa", "Song", WorkType::Audio, 10))
+            .unwrap();
+        idx.upsert(manifest(1, "fp:bb", "Song", WorkType::Audio, 11))
+            .unwrap();
+        assert!(idx.resolve("fp:aa").is_none());
+        assert_eq!(idx.resolve("fp:bb").unwrap().work_id, Bytes32([1; 32]));
+    }
+
+    /// Loading a snapshot from a path that doesn't exist yields an empty index.
+    #[test]
+    fn load_snapshot_missing_file_is_empty() {
+        let dir = std::env::temp_dir().join("cwe_hub_test_snap_missing");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("does_not_exist.json");
+        let idx = Index::load_snapshot(&path).unwrap();
+        assert!(idx.is_empty());
+        assert_eq!(idx.len(), 0);
+    }
+
+    /// The second page of search results returns the remainder and the correct total.
+    #[test]
+    fn search_pagination_second_page() {
+        let mut idx = Index::new();
+        idx.upsert(manifest(1, "fp:a", "Ocean Song", WorkType::Audio, 10))
+            .unwrap();
+        idx.upsert(manifest(2, "fp:b", "Ocean Waves", WorkType::Audio, 11))
+            .unwrap();
+        idx.upsert(manifest(3, "fp:c", "Ocean Breeze", WorkType::Audio, 12))
+            .unwrap();
+        let (results, total) = idx.search("ocean", None, 2, 2);
+        assert_eq!(total, 3);
+        assert_eq!(results.len(), 1);
+    }
+
+    /// Equal-relevance matches are ordered by ascending work_id, deterministically.
+    #[test]
+    fn search_ties_break_by_work_id_ascending() {
+        let mut idx = Index::new();
+        idx.upsert(manifest(2, "fp:b", "Ocean Song", WorkType::Audio, 10))
+            .unwrap();
+        idx.upsert(manifest(1, "fp:a", "Ocean Song", WorkType::Audio, 10))
+            .unwrap();
+        let (first, _) = idx.search("ocean", None, 1, 20);
+        assert_eq!(first[0].work_id, Bytes32([1; 32]));
+        assert_eq!(first[1].work_id, Bytes32([2; 32]));
+        let (second, _) = idx.search("ocean", None, 1, 20);
+        assert_eq!(second[0].work_id, first[0].work_id);
+        assert_eq!(second[1].work_id, first[1].work_id);
+    }
 }
