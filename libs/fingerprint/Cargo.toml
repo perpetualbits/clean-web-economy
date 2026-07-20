@@ -14,3 +14,4 @@ description = "Deterministic Phase 1 fingerprint stub (SHA-256 over samples) for
 [dependencies]
 sha2.workspace = true          # the hash backing the Phase 1 stub
 hex.workspace = true           # render digests as the fp:<64 hex> id format
+thiserror.workspace = true     # typed parse errors (FingerprintError)
