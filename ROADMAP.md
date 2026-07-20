@@ -1,9 +1,13 @@
 # Roadmap (High-Level)
 
-## Phase 1 — MVP (Music)
-- Browser extension: local accounting + FP lookup stub
-- Contracts: tiers, registry, consumption submit, payout ledger
-- DAPR simulator end‑to‑end
+## Phase 1 — MVP (Music) ✅ complete
+- [x] Browser extension: local accounting + FP lookup stub
+- [x] Contracts: tiers, registry, consumption submit, payout ledger
+- [x] DAPR simulator end‑to‑end
+- [x] Off-chain settlement job + one-command demo (`make -C ops demo`)
+
+See `docs/plans/phase1_mvp_music_implementation_plan.md` and
+`docs/plans/phase1_demo.md`.
 
 ## Phase 2 — Video & News
 - Player plugin hooks (VLC/FFmpeg)

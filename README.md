@@ -17,14 +17,20 @@
 
 ## Get Involved
 - Read the [Architecture Blueprint](docs/architecture_blueprint_v0.1.md).
-- Try the **devnet**: `make devnet` (see `ops/Makefile`).
+- Run the **Phase 1 demo**: `make -C ops demo` — deploys, subscribes, submits
+  usage, settles, and pays creators end-to-end on a local Anvil node. See
+  [the walkthrough](docs/plans/phase1_demo.md).
 - Join an issue labeled _good first issue_ or propose an [RFC](rfcs/README.md).
 
 ## Project Status
-This is a community build. We’re starting with:
-- Browser extension skeleton (content recognition + local accounting)
-- Minimal smart contracts (tiers, registry, consumption, payouts)
-- DAPR simulation
+Phase 1 (Music MVP) is complete — see the [ROADMAP](ROADMAP.md):
+- Browser extension: local accounting + fingerprint-lookup stub (Rust/WASM core)
+- Smart contracts: tiers, registry, consumption submit, payout ledger (Foundry)
+- DAPR payout simulator and the off-chain settlement job (Rust)
+- One-command end-to-end demo
+
+The stack is Rust throughout, except the Solidity contracts and the browser
+extension's JS shell.
 
 ## Contributing
 See [CONTRIBUTING.md](CONTRIBUTING.md). Be kind: [Code of Conduct](CODE_OF_CONDUCT.md).

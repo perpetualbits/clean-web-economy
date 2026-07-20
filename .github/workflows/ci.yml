@@ -117,3 +117,27 @@ jobs:
         with:
           name: cwe-browser-ext
           path: clients/browser-ext/dist
+
+  # ---------------------------------------------------------------------------
+  # End-to-end demo: the Phase 1 exit criterion, run headlessly on Anvil.
+  # register -> subscribe -> submit -> settle -> withdraw, asserting balances.
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: End-to-end demo (Anvil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # `jq` parses the settlement's proof output inside the demo script.
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run the demo
+        run: make -C ops test-e2e

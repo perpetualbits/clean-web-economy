@@ -1,11 +1,23 @@
-version: '3.8'
+# Interactive devnet for the Clean Web Economy (Phase 1).
+#
+# Two services:
+#   * anvil  — a local EVM node the contracts deploy to.
+#   * works  — a one-file static server hosting the works manifest and a demo
+#              page. This replaces the Phase 2 Discovery Hub, which does not
+#              exist yet; Phase 1 resolution is a static manifest (decision D4).
 services:
-  hardhat:
+  anvil:
+    # Foundry image provides anvil; bind to all interfaces so the host can reach it.
     image: ghcr.io/foundry-rs/foundry:latest
-    command: anvil -p 8545
+    command: anvil --host 0.0.0.0 -p 8545
     ports: ["8545:8545"]
-  discovery-hub:
-    image: ghcr.io/yourorg/discovery-hub:dev
-    environment:
-      - PORT=8080
+
+  works:
+    # A minimal static file server for the works manifest + demo page. Serves the
+    # extension's assets directory so a fingerprint→work manifest is available.
+    image: python:3-alpine
+    working_dir: /srv
+    command: python -m http.server 8080
+    volumes:
+      - ../clients/browser-ext/assets:/srv:ro
     ports: ["8080:8080"]
