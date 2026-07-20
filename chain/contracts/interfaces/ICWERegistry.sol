@@ -34,4 +34,14 @@ interface ICWERegistry {
     /// @param workId The work identifier.
     /// @return True iff the work exists in the registry.
     function isRegistered(bytes32 workId) external view returns (bool);
+
+    /// @notice The address that first registered a work.
+    /// @param workId The work identifier.
+    /// @return The registrant address (zero if unregistered).
+    function registrantOf(bytes32 workId) external view returns (address);
+
+    /// @notice The opaque region-rule tag for a work.
+    /// @param workId The work identifier.
+    /// @return The regionRule tag.
+    function regionRuleOf(bytes32 workId) external view returns (bytes32);
 }

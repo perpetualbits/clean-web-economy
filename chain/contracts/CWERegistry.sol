@@ -124,6 +124,20 @@ contract CWERegistry is ICWERegistry, Ownable {
         return _works[workId].pricePerMin;
     }
 
+    /// @notice The address that first registered a work (its owner for updates).
+    /// @param workId The work identifier.
+    /// @return The registrant address, or the zero address if unregistered.
+    function registrantOf(bytes32 workId) external view returns (address) {
+        return _works[workId].registrant;
+    }
+
+    /// @notice The opaque region-rule tag a work was registered with.
+    /// @param workId The work identifier.
+    /// @return The regionRule bytes32 tag.
+    function regionRuleOf(bytes32 workId) external view returns (bytes32) {
+        return _works[workId].regionRule;
+    }
+
     /// @dev Enforce the split rules: equal non-empty lengths, no zero payee, no
     ///      zero share, and shares summing to exactly PPM_TOTAL. Reverting here
     ///      guarantees `CWEPayouts` can always disburse the full credited amount.

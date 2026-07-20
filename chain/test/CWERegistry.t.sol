@@ -108,4 +108,19 @@ contract CWERegistryTest is Test {
         registry.registerWork(WORK, payees, splits, 2000, bytes32("US"));
         assertEq(registry.pricePerMinOf(WORK), 2000);
     }
+
+    /// @notice The registrant and region are readable after registration.
+    function test_getters_exposeRegistrantAndRegion() public {
+        (address payable[] memory payees, uint96[] memory splits) = _splitArrays();
+        vm.prank(creator);
+        registry.registerWork(WORK, payees, splits, 1000, bytes32("EU"));
+
+        assertEq(registry.registrantOf(WORK), creator);
+        assertEq(registry.regionRuleOf(WORK), bytes32("EU"));
+    }
+
+    /// @notice An unregistered work reports the zero registrant.
+    function test_registrantOf_unregisteredIsZero() public view {
+        assertEq(registry.registrantOf(keccak256("nope")), address(0));
+    }
 }
