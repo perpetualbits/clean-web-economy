@@ -24,3 +24,7 @@ optimizer_runs = 200     # a balanced default for contracts called a moderate nu
 remappings = [
     "forge-std/=lib/forge-std/src/",
 ]
+
+# Foundry sandboxes filesystem access by default. The deploy script writes the
+# address map here, so grant read-write to the deployments directory only.
+fs_permissions = [{ access = "read-write", path = "./deployments" }]

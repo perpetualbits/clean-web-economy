@@ -12,6 +12,8 @@ chain/cache
 # Locally-generated deployment address maps and epoch proof dumps.
 chain/deployments/localhost.json
 chain/out/
+# forge script broadcast logs (per-run transaction artifacts).
+chain/broadcast
 
 # --- WebAssembly / extension build (WP6) ------------------------------------
 clients/browser-ext/dist
