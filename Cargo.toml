@@ -22,7 +22,7 @@ members = [
     "libs/fingerprint",   # WP3 — deterministic fingerprint stub
     "libs/wallet-zk",     # WP4 — wallet, commitments, session accounting
     "sims",               # WP2 — DAPR payout-math reference crate
-    # "services/settlement",     # WP5 — added when the settlement job lands
+    "services/settlement",  # WP5 — off-chain epoch settlement job
     # "clients/browser-ext/core" # WP6 — added when the extension core lands
 ]
 

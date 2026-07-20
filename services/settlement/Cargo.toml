@@ -1,0 +1,34 @@
+# WP5 — the off-chain settlement job.
+#
+# A binary that closes an epoch: it reads the usage submissions from the chain,
+# opens their commitments from a disclosure file, runs the shared DAPR math to
+# compute per-work credits, builds the Merkle tree the payout contract expects,
+# commits the root on-chain, and writes withdrawal proofs for creators.
+[package]
+name = "cwe-settlement"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Off-chain epoch settlement job for the Clean Web Economy"
+
+[dependencies]
+# Shared payout math — the SAME crate the simulator uses, so settlement and the
+# simulator can never disagree numerically.
+cwe-dapr = { path = "../../sims" }
+# Commitment opening/verification and the Bytes32 hex type.
+cwe-wallet-zk = { path = "../../libs/wallet-zk" }
+
+# Ethereum stack: provider/RPC, contract bindings (sol! macro), and a local signer.
+alloy = { version = "2", features = ["full"] }
+# Async runtime alloy's provider requires.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+# Used to drive the shared DAPR fixtures through the settlement Merkle path.
+serde_json.workspace = true
