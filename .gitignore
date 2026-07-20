@@ -25,6 +25,11 @@ node_modules
 clients/browser-ext/test-results
 clients/browser-ext/playwright-report
 
+# --- Discovery Hub (services/discovery-hub/) --------------------------------
+# Local index snapshot written by `cwe-hub` on every ingest (SNAPSHOT env var).
+hub-index.json
+services/discovery-hub/hub-index.json
+
 # --- Editor / OS noise ------------------------------------------------------
 *.swp
 .DS_Store

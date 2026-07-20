@@ -141,3 +141,28 @@ jobs:
 
       - name: Run the demo
         run: make -C ops test-e2e
+
+  # ---------------------------------------------------------------------------
+  # Discovery Hub end-to-end demo: deploy -> register work -> sign & POST a
+  # manifest -> resolve + search -> assert a non-registrant manifest is
+  # rejected. Run headlessly on Anvil, same pattern as `e2e` above.
+  # ---------------------------------------------------------------------------
+  hub-e2e:
+    name: Discovery Hub end-to-end demo (Anvil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # `jq` parses the deployment addresses and `curl` drives the hub's HTTP API.
+      - name: Install jq and curl
+        run: sudo apt-get update && sudo apt-get install -y jq curl
+
+      - name: Run the demo
+        run: make -C ops hub-demo
