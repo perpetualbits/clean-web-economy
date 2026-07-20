@@ -4,7 +4,7 @@
 //! re-verifies. It is signed by the creator over its RFC 8785 canonical JSON form,
 //! so the hub can recover the signer and check it against the registry registrant.
 
-use alloy::primitives::Address;
+pub use alloy::primitives::Address;
 use alloy::signers::Signature;
 use cwe_wallet_zk::Bytes32;
 use serde::{Deserialize, Serialize};
