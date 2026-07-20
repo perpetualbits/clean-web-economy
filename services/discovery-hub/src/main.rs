@@ -7,6 +7,7 @@ use cwe_discovery_hub::chain::DiscoveryChain;
 use cwe_discovery_hub::config::Config;
 use cwe_discovery_hub::index::Index;
 
+/// Load config, restore the index snapshot, and serve the Discovery Hub API.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load config and the persisted index snapshot.

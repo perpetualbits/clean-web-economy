@@ -125,6 +125,11 @@ async fn resolve<R: RegistryView + Send + Sync>(
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "fingerprint not found"))
 }
 
+/// Fixed page size for `/search` and `/trending` (design §5). The MVP does not
+/// let clients choose a page size — this also keeps `page` bounded well away
+/// from overflowing `Index::search`'s `page.saturating_sub(1) * page_size`.
+const PAGE_SIZE: usize = 20;
+
 /// Query parameters accepted by `GET /search`.
 #[derive(Debug, Deserialize)]
 struct SearchQuery {
@@ -132,7 +137,6 @@ struct SearchQuery {
     #[serde(rename = "type")]
     work_type: Option<WorkType>,
     page: Option<usize>,
-    page_size: Option<usize>,
 }
 
 /// `GET /search` — ranked text search over title/tags/description, paginated.
@@ -141,13 +145,12 @@ async fn search<R: RegistryView + Send + Sync>(
     Query(params): Query<SearchQuery>,
 ) -> Json<serde_json::Value> {
     let page = params.page.unwrap_or(1).max(1);
-    let page_size = params.page_size.unwrap_or(20).max(1);
     let idx = state.index.read().await;
     let (results, total) = idx.search(
         params.q.as_deref().unwrap_or(""),
         params.work_type,
         page,
-        page_size,
+        PAGE_SIZE,
     );
     Json(serde_json::json!({ "results": results, "page": page, "total": total }))
 }
@@ -157,7 +160,6 @@ async fn search<R: RegistryView + Send + Sync>(
 struct TrendingQuery {
     #[serde(rename = "type")]
     work_type: Option<WorkType>,
-    page_size: Option<usize>,
 }
 
 /// `GET /trending` — recency-ranked list of works, optionally filtered by type.
@@ -165,13 +167,12 @@ async fn trending<R: RegistryView + Send + Sync>(
     State(state): State<GenericState<R>>,
     Query(params): Query<TrendingQuery>,
 ) -> Json<serde_json::Value> {
-    let page_size = params.page_size.unwrap_or(20).max(1);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let idx = state.index.read().await;
-    let results = idx.trending(params.work_type, now, page_size);
+    let results = idx.trending(params.work_type, now, PAGE_SIZE);
     Json(serde_json::json!({ "results": results }))
 }
 
@@ -286,8 +287,7 @@ fn paths_json() -> serde_json::Value {
                 "parameters": [
                     { "name": "q", "in": "query", "schema": { "type": "string" } },
                     { "name": "type", "in": "query", "schema": work_type_schema },
-                    { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1 } },
-                    { "name": "page_size", "in": "query", "schema": { "type": "integer", "minimum": 1 } }
+                    { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1 } }
                 ],
                 "responses": {
                     "200": { "description": "Search results", "content": { "application/json": {
@@ -305,8 +305,7 @@ fn paths_json() -> serde_json::Value {
                 "summary": "Recency-ranked list of works",
                 "operationId": "trendingWorks",
                 "parameters": [
-                    { "name": "type", "in": "query", "schema": work_type_schema },
-                    { "name": "page_size", "in": "query", "schema": { "type": "integer", "minimum": 1 } }
+                    { "name": "type", "in": "query", "schema": work_type_schema }
                 ],
                 "responses": {
                     "200": { "description": "Trending results", "content": { "application/json": {
@@ -553,5 +552,243 @@ mod tests {
         let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(doc["paths"]["/manifests"].is_object());
         assert!(doc["components"]["schemas"]["WorkManifest"].is_object());
+    }
+
+    /// Build a manifest with the given identity/fingerprint/title, otherwise
+    /// matching the fixed on-chain facts [`FakeReg`] returns (so it always
+    /// passes chain validation for the signer that owns `creator`).
+    fn manifest(
+        work_id: [u8; 32],
+        fingerprint: &str,
+        title: &str,
+        creator: Address,
+    ) -> WorkManifest {
+        WorkManifest {
+            work_id: Bytes32(work_id),
+            fingerprint: fingerprint.to_string(),
+            title: title.to_string(),
+            description: String::new(),
+            tags: vec![],
+            work_type: WorkType::Audio,
+            price_per_min: 1_000_000,
+            region: Bytes32([0; 32]),
+            creator_id: creator,
+            created_at: 1,
+        }
+    }
+
+    /// Sign `m` with `signer` and JSON-encode the `POST /manifests` body.
+    fn ingest_body(m: &WorkManifest, signer: &PrivateKeySigner) -> String {
+        let sig = format!(
+            "0x{}",
+            hex::encode(
+                signer
+                    .sign_message_sync(&m.canonical_bytes().unwrap())
+                    .unwrap()
+                    .as_bytes()
+            )
+        );
+        serde_json::json!({ "manifest": m, "signature": sig }).to_string()
+    }
+
+    /// `GET /search` finds an ingested work by a token in its title.
+    #[tokio::test]
+    async fn search_finds_ingested_work() {
+        let signer = PrivateKeySigner::random();
+        let state = test_state(FakeReg(signer.address()));
+        let app = router_generic(state);
+
+        let m = manifest([3; 32], "fp:search", "Nightjar Melodies", signer.address());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/manifests")
+                    .header("content-type", "application/json")
+                    .body(Body::from(ingest_body(&m, &signer)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let resp = app
+            .oneshot(
+                Request::get("/search?q=nightjar")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["total"], 1);
+        assert_eq!(body["results"][0]["work_id"], m.work_id.to_string());
+    }
+
+    /// `GET /trending` lists an ingested work.
+    #[tokio::test]
+    async fn trending_lists_ingested_work() {
+        let signer = PrivateKeySigner::random();
+        let state = test_state(FakeReg(signer.address()));
+        let app = router_generic(state);
+
+        let m = manifest([4; 32], "fp:trend", "Trending Tune", signer.address());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/manifests")
+                    .header("content-type", "application/json")
+                    .body(Body::from(ingest_body(&m, &signer)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let resp = app
+            .oneshot(Request::get("/trending").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["results"][0]["work_id"], m.work_id.to_string());
+    }
+
+    /// `GET /manifest/{work_id}` returns the manifest for a known work, and 404
+    /// for an unregistered one.
+    #[tokio::test]
+    async fn manifest_success_and_not_found() {
+        let signer = PrivateKeySigner::random();
+        let state = test_state(FakeReg(signer.address()));
+        let app = router_generic(state);
+
+        let m = manifest([5; 32], "fp:manifest", "Manifest Work", signer.address());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/manifests")
+                    .header("content-type", "application/json")
+                    .body(Body::from(ingest_body(&m, &signer)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/manifest/{}", m.work_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["title"], "Manifest Work");
+
+        let missing = Bytes32([0xab; 32]);
+        let resp = app
+            .oneshot(
+                Request::get(format!("/manifest/{}", missing))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// `GET /creator/{address}` returns a creator's works and count, and 400 for
+    /// a malformed address.
+    #[tokio::test]
+    async fn creator_success_and_bad_address() {
+        let signer = PrivateKeySigner::random();
+        let state = test_state(FakeReg(signer.address()));
+        let app = router_generic(state);
+
+        let m = manifest([6; 32], "fp:creator", "Creator Work", signer.address());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/manifests")
+                    .header("content-type", "application/json")
+                    .body(Body::from(ingest_body(&m, &signer)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/creator/{}", signer.address()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["count"], 1);
+
+        let resp = app
+            .oneshot(
+                Request::get("/creator/not-an-address")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Ingesting a different work with a fingerprint already claimed by another
+    /// work is rejected with 409, even though it otherwise passes chain
+    /// validation.
+    #[tokio::test]
+    async fn ingest_duplicate_fingerprint_is_conflict() {
+        let signer = PrivateKeySigner::random();
+        let state = test_state(FakeReg(signer.address()));
+        let app = router_generic(state);
+
+        let a = manifest([7; 32], "fp:aa", "First Work", signer.address());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/manifests")
+                    .header("content-type", "application/json")
+                    .body(Body::from(ingest_body(&a, &signer)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let b = manifest([8; 32], "fp:aa", "Second Work", signer.address());
+        let resp = app
+            .oneshot(
+                Request::post("/manifests")
+                    .header("content-type", "application/json")
+                    .body(Body::from(ingest_body(&b, &signer)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
     }
 }
