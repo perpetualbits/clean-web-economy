@@ -1,0 +1,7 @@
+{
+  "per_work": {
+    "wFull": 600000,
+    "wHalf": 300000
+  },
+  "unallocated": 0
+}

@@ -1,0 +1,17 @@
+{
+  "tier_fees": { "u1": 1000000, "u2": 1000000, "u3": 500000, "u4": 2500000, "u5": 333333 },
+  "usage": [
+    { "user": "u1", "work": "wA", "minutes": 50,  "price_ppm": 1000000, "region_ppm": 1000000 },
+    { "user": "u1", "work": "wB", "minutes": 25,  "price_ppm": 1500000, "region_ppm": 900000 },
+    { "user": "u1", "work": "wC", "minutes": 10,  "price_ppm": 2000000, "region_ppm": 1000000 },
+    { "user": "u2", "work": "wA", "minutes": 100, "price_ppm": 1000000, "region_ppm": 1000000 },
+    { "user": "u2", "work": "wD", "minutes": 40,  "price_ppm": 800000,  "region_ppm": 1100000 },
+    { "user": "u3", "work": "wB", "minutes": 33,  "price_ppm": 1500000, "region_ppm": 950000 },
+    { "user": "u3", "work": "wC", "minutes": 33,  "price_ppm": 2000000, "region_ppm": 950000 },
+    { "user": "u3", "work": "wE", "minutes": 33,  "price_ppm": 500000,  "region_ppm": 950000 },
+    { "user": "u4", "work": "wA", "minutes": 200, "price_ppm": 1000000, "region_ppm": 1000000 },
+    { "user": "u5", "work": "wE", "minutes": 7,   "price_ppm": 500000,  "region_ppm": 1000000 },
+    { "user": "u5", "work": "wF", "minutes": 7,   "price_ppm": 500000,  "region_ppm": 1000000 },
+    { "user": "u5", "work": "wG", "minutes": 7,   "price_ppm": 500000,  "region_ppm": 1000000 }
+  ]
+}

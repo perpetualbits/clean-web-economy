@@ -1,0 +1,7 @@
+{
+  "tier_fees": { "u1": 900000 },
+  "usage": [
+    { "user": "u1", "work": "wFull", "minutes": 100, "price_ppm": 1000000, "region_ppm": 1000000 },
+    { "user": "u1", "work": "wHalf", "minutes": 100, "price_ppm": 1000000, "region_ppm": 500000 }
+  ]
+}

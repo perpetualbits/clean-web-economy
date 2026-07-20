@@ -1,0 +1,6 @@
+{
+  "tier_fees": { "u1": 777777 },
+  "usage": [
+    { "user": "u1", "work": "wONLY", "minutes": 42, "price_ppm": 1000000, "region_ppm": 1000000 }
+  ]
+}
