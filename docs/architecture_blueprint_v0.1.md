@@ -1,6 +1,6 @@
 # Clean Web Economy — Technical Architecture Blueprint v0.1
 
-**Author:** Roland Nagtegaal & ChatGPT (GPT-5)
+**Author:** Roland Nagtegaal
 
 **Status:** Draft for architecture review
 

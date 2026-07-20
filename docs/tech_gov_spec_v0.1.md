@@ -1,6 +1,6 @@
 # Clean Web Economy — Technical Governance Specification v0.1 (Systems Engineering)
 
-**Author:** Roland Nagtegaal & ChatGPT (GPT-5)
+**Author:** Roland Nagtegaal
 
 **Status:** Draft for architecture review
 

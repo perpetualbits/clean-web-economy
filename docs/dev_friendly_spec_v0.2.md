@@ -1,6 +1,6 @@
 # Clean Web Economy — Developer‑Friendly Spec v0.2
 
-**Author:** Roland Nagtegaal & ChatGPT (GPT-5)
+**Author:** Roland Nagtegaal
 
 **Status:** Draft for implementation
 

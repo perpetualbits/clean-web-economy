@@ -1,6 +1,6 @@
 # Clean Web Economy — Specification v0.2 (with Distributed Microservices)
 
-**Author:** Roland Nagtegaal & ChatGPT (GPT-5 Thinking)
+**Author:** Roland Nagtegaal
 
 **Status:** Draft for internal review
 

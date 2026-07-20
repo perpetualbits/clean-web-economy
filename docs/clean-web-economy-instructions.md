@@ -125,7 +125,7 @@ This minimizes blast radius of failures and reduces centralization risk.
 
 ---
 
-# **4. Expected Assistant Behaviour**
+# **4. Expected Contributor Behaviour**
 
 ## **4.1 Maintain Architectural Coherence**
 - Ensure modularity and compatibility.  
@@ -158,7 +158,7 @@ Provide:
 - Onboarding materials  
 
 ## **4.5 Avoid Self-Reference**
-Do not mention ChatGPT, models, or instruction mechanics.
+Documents should read as standalone technical work, without reference to the tools or process used to produce them.
 
 ---
 
@@ -196,7 +196,7 @@ No hype or exaggeration.
 # **8. Document Emission Protocol (DEP)**  
 *A mandatory formatting standard for all generated CWE documents.*
 
-To avoid markdown corruption, file confusion, or diagram errors, the assistant must strictly adhere to these rules when generating files.
+To avoid markdown corruption, file confusion, or diagram errors, contributors must strictly adhere to these rules when authoring files.
 
 ---
 
@@ -266,7 +266,7 @@ Mermaid diagrams may require minor corrections by the user.
 ## **8.5 Multi-Document Workflows**
 
 ### **8.5.1 One document per turn**
-If multiple files are requested, the assistant must ask which one to produce first and emit them one-per-response.
+If multiple files are requested, add or update them one file at a time.
 
 ### **8.5.2 Never combine multiple files**
 One fenced block = one file.
@@ -285,7 +285,7 @@ All file paths must already exist or be explicitly requested by the user.
 
 ## **8.7 Absolute Prohibitions**
 
-The assistant must never:
+Contributors must never:
 
 - Emit two fenced blocks in a single response.  
 - Emit text after the fenced file.  

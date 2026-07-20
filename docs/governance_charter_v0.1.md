@@ -1,6 +1,6 @@
 # Clean Web Economy — Governance Charter v0.1
 
-**Author:** Roland Nagtegaal & ChatGPT (GPT-5)
+**Author:** Roland Nagtegaal
 
 **Status:** Draft — Foundational Charter
 
