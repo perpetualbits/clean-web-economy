@@ -5,5 +5,6 @@
 
 #![forbid(unsafe_code)]
 
+pub mod chain;
 pub mod index;
 pub mod manifest;
