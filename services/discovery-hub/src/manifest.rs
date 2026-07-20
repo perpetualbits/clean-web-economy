@@ -10,7 +10,7 @@ use cwe_wallet_zk::Bytes32;
 use serde::{Deserialize, Serialize};
 
 /// The modality of a work. Serialised lowercase (`"audio"`, `"video"`, `"text"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkType {
     Audio,
@@ -20,9 +20,10 @@ pub enum WorkType {
 
 /// A work's public manifest. Field order here does not affect signing: the
 /// canonical form sorts keys (RFC 8785).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct WorkManifest {
     /// On-chain CWERegistry work id.
+    #[schema(value_type = String)]
     pub work_id: Bytes32,
     /// The `fp:<hex>` fingerprint from `cwe-fingerprint`.
     pub fingerprint: String,
@@ -37,8 +38,10 @@ pub struct WorkManifest {
     /// Price per minute in ppm; MUST equal the on-chain value.
     pub price_per_min: u64,
     /// The on-chain regionRule tag; MUST equal the on-chain value.
+    #[schema(value_type = String)]
     pub region: Bytes32,
     /// The creator's address; MUST equal the on-chain registrant.
+    #[schema(value_type = String)]
     pub creator_id: Address,
     /// Client Unix seconds when authored (used only for recency).
     pub created_at: u64,

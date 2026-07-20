@@ -11,14 +11,17 @@ description = "Privacy-preserving discovery hub for the Clean Web Economy"
 cwe-fingerprint = { path = "../../libs/fingerprint" }
 cwe-wallet-zk = { path = "../../libs/wallet-zk" }
 alloy = { version = "2", features = ["full"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+axum = { version = "0.8", features = ["macros"] }
 utoipa = "5"
 serde.workspace = true
 serde_json.workspace = true
 serde_jcs.workspace = true
 thiserror.workspace = true
 hex.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 
 [[bin]]
 name = "cwe-hub"

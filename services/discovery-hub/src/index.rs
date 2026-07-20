@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 use crate::manifest::{WorkManifest, WorkType};
 
 /// A compact listing entry returned by search/trending/creator endpoints.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Summary {
+    #[schema(value_type = String)]
     pub work_id: Bytes32,
     pub fingerprint: String,
     pub title: String,
@@ -26,10 +27,12 @@ pub struct Summary {
 }
 
 /// The payload returned by `GET /resolve/:fingerprint` (the extension seam).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Resolved {
+    #[schema(value_type = String)]
     pub work_id: Bytes32,
     pub price_per_min: u64,
+    #[schema(value_type = String)]
     pub region: Bytes32,
     pub work_type: WorkType,
 }
