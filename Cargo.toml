@@ -23,6 +23,7 @@ members = [
     "libs/wallet-zk",     # WP4 — wallet, commitments, session accounting
     "sims",               # WP2 — DAPR payout-math reference crate
     "services/settlement",  # WP5 — off-chain epoch settlement job
+    "services/discovery-hub", # Phase 2 — Discovery Hub service
 ]
 
 # The browser-extension core is a wasm crate built by wasm-pack (not the native
@@ -53,6 +54,7 @@ hex = "0.4"            # hex encoding/decoding for fp:<hex> ids and commitments
 serde = { version = "1", features = ["derive"] }  # (de)serialisation of fixtures/manifests
 serde_json = "1"       # JSON fixtures and the DAPR expected-output oracle
 thiserror = "2"        # ergonomic error enums for library crates
+serde_jcs = "0.1"     # RFC 8785 canonical JSON for signable manifests
 # `tiny-keccak` provides keccak256, the hash the contracts use for commitments;
 # keeping the same primitive off-chain guarantees on-/off-chain agreement (WP4).
 tiny-keccak = { version = "2", features = ["keccak"] }

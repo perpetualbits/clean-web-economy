@@ -1,0 +1,29 @@
+# Phase 2 — the Discovery Hub service (fingerprint resolution + search).
+[package]
+name = "cwe-discovery-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Privacy-preserving discovery hub for the Clean Web Economy"
+
+[dependencies]
+cwe-fingerprint = { path = "../../libs/fingerprint" }
+cwe-wallet-zk = { path = "../../libs/wallet-zk" }
+alloy = { version = "2", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+axum = "0.8"
+utoipa = "5"
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+
+[[bin]]
+name = "cwe-hub"
+path = "src/main.rs"
+
+[[bin]]
+name = "sign-manifest"
+path = "src/bin/sign_manifest.rs"
