@@ -31,3 +31,39 @@ export class StaticHubClient {
     return this.manifest[fingerprint] || null;
   }
 }
+
+/**
+ * Resolves fingerprints against a live Discovery Hub, falling back to a static
+ * client on a miss or network error. `fetchImpl` is injectable for testing.
+ */
+export class NetworkedHubClient {
+  /**
+   * @param {string} hubUrl Base URL of the Discovery Hub.
+   * @param {?StaticHubClient} fallback Used when the hub has no answer.
+   * @param {typeof fetch} [fetchImpl] Fetch implementation (defaults to global fetch).
+   */
+  constructor(hubUrl, fallback, fetchImpl) {
+    this.hubUrl = hubUrl.replace(/\/$/, "");
+    this.fallback = fallback;
+    this.fetchImpl = fetchImpl || fetch;
+  }
+
+  /**
+   * Resolve a fingerprint via the hub, then the fallback.
+   * @param {string} fingerprint The `fp:<hex>` identifier.
+   * @returns {Promise<?object>} Work metadata or null.
+   */
+  async resolveFingerprint(fingerprint) {
+    try {
+      // The fingerprint's `fp:<hex>` form is used verbatim in the path (matches the hub's route).
+      const resp = await this.fetchImpl(`${this.hubUrl}/resolve/${fingerprint}`);
+      if (resp.ok) {
+        // The hub returns {work_id, price_per_min, region, work_type}.
+        return await resp.json();
+      }
+    } catch (_e) {
+      // Network failure: fall through to the static fallback.
+    }
+    return this.fallback ? this.fallback.resolveFingerprint(fingerprint) : null;
+  }
+}

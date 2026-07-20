@@ -2,7 +2,7 @@
 // `config` object in chrome.storage. Plain script (no imports, no bundling).
 
 // The config fields this page manages (the price cap lives in the popup).
-const FIELDS = ["rpcUrl", "consumption", "tierId", "privateKey"];
+const FIELDS = ["rpcUrl", "hubUrl", "consumption", "tierId", "privateKey"];
 
 // Populate the inputs from stored config on load.
 chrome.storage.local.get("config").then(({ config }) => {

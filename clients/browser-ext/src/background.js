@@ -12,7 +12,7 @@
 
 import init, { fingerprint, commitment, WasmSession } from "../pkg/cwe_ext_core.js";
 import { JsonRpcProvider, Wallet, Contract } from "ethers";
-import { StaticHubClient } from "./hub.js";
+import { StaticHubClient, NetworkedHubClient } from "./hub.js";
 import { allows } from "./policy.js";
 
 // Minimal ABI for the one call the extension makes on-chain.
@@ -38,7 +38,12 @@ function ensureReady() {
       await init({ module_or_path: chrome.runtime.getURL("cwe_ext_core_bg.wasm") });
       // Load the static works manifest that maps fingerprints to works.
       const manifest = await fetch(chrome.runtime.getURL("works.json")).then((r) => r.json());
-      hub = new StaticHubClient(manifest);
+      const staticClient = new StaticHubClient(manifest);
+      // A configured hubUrl switches resolution to the live Discovery Hub, with the
+      // static manifest as its fallback on a miss or network error.
+      const stored2 = await chrome.storage.local.get("config");
+      const hubUrl = stored2.config && stored2.config.hubUrl;
+      hub = hubUrl ? new NetworkedHubClient(hubUrl, staticClient) : staticClient;
       // Restore a persisted session snapshot, or start a fresh one.
       const stored = await chrome.storage.local.get("sessionSnapshot");
       session = stored.sessionSnapshot
@@ -65,7 +70,9 @@ async function handlePlay({ sessionId, src }) {
   await ensureReady();
   // Fingerprint the source URL bytes (Phase 1 identification).
   const fp = fingerprint(new TextEncoder().encode(src));
-  const work = hub.resolveFingerprint(fp);
+  // Awaited so this works whether `hub` is the sync static client or the async
+  // networked client (which resolves live, falling back to the static manifest).
+  const work = await hub.resolveFingerprint(fp);
   // Unknown work: nothing to account or charge for.
   if (!work) return { ok: true, resolved: false };
 
