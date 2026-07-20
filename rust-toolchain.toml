@@ -1,0 +1,11 @@
+# Pins the Rust toolchain so every contributor and CI build uses an identical
+# compiler. `stable` tracks the latest stable release; the components and the
+# wasm target below are the ones the CWE build actually needs.
+[toolchain]
+channel = "stable"
+# clippy = linter, rustfmt = formatter. Listing them here makes `rustup` install
+# them automatically when the toolchain is provisioned.
+components = ["clippy", "rustfmt"]
+# The browser-extension core (WP6) compiles to WebAssembly; declaring the target
+# here means a fresh clone can build it without a manual `rustup target add`.
+targets = ["wasm32-unknown-unknown"]

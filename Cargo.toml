@@ -1,0 +1,63 @@
+# ---------------------------------------------------------------------------
+# Root Cargo workspace for the Clean Web Economy (CWE) Phase 1 MVP.
+#
+# Per the Phase 1 plan's amended decision D6, everything in this repository is
+# implemented in Rust EXCEPT the on-chain contracts (Solidity, built with
+# Foundry under `chain/`). This workspace ties together every Rust crate so a
+# single `cargo build` / `cargo test` at the repo root compiles and checks them
+# all with one shared dependency set and one lockfile.
+# ---------------------------------------------------------------------------
+
+[workspace]
+# `resolver = "2"` is the modern Cargo dependency resolver. It keeps
+# dev-/build-/target-specific features from leaking into normal builds, which
+# matters here because some crates (e.g. the browser-extension core) will target
+# wasm while others stay native.
+resolver = "2"
+
+# Every path listed here is a crate that belongs to the workspace. New work
+# packages append their crate directory as they come online; the list is kept
+# in rough dependency order for readability.
+members = [
+    "libs/fingerprint",   # WP3 — deterministic fingerprint stub
+    "libs/wallet-zk",     # WP4 — wallet, commitments, session accounting
+    "sims",               # WP2 — DAPR payout-math reference crate
+    # "services/settlement",     # WP5 — added when the settlement job lands
+    # "clients/browser-ext/core" # WP6 — added when the extension core lands
+]
+
+# ---------------------------------------------------------------------------
+# Shared package metadata. Individual crates inherit these with
+# `field.workspace = true`, so the version, edition, and licensing stay
+# consistent across the whole codebase and only change in one place.
+# ---------------------------------------------------------------------------
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+# The repository is dual-licensed (see LICENSE-AGPL-3.0.txt / LICENSE-MPL-2.0.txt);
+# an SPDX expression records that choice for downstream tooling.
+license = "AGPL-3.0-or-later OR MPL-2.0"
+repository = "https://github.com/perpetualbits/clean-web-economy"
+
+# ---------------------------------------------------------------------------
+# Shared dependency versions. Crates reference these with
+# `dep.workspace = true`, guaranteeing every crate uses the same version of a
+# given library and that upgrades happen in exactly one place.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+sha2 = "0.10"          # SHA-256, used by the fingerprint stub (decision D3)
+hex = "0.4"            # hex encoding/decoding for fp:<hex> ids and commitments
+serde = { version = "1", features = ["derive"] }  # (de)serialisation of fixtures/manifests
+serde_json = "1"       # JSON fixtures and the DAPR expected-output oracle
+thiserror = "2"        # ergonomic error enums for library crates
+# `tiny-keccak` provides keccak256, the hash the contracts use for commitments;
+# keeping the same primitive off-chain guarantees on-/off-chain agreement (WP4).
+tiny-keccak = { version = "2", features = ["keccak"] }
+
+# ---------------------------------------------------------------------------
+# Release-profile tuning. Off-chain jobs (settlement) benefit from optimised
+# builds; the defaults are fine for everything else.
+# ---------------------------------------------------------------------------
+[profile.release]
+opt-level = 3
+lto = "thin"   # thin LTO: most of the speed win of full LTO, far less build time

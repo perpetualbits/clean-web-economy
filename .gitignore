@@ -1,0 +1,22 @@
+# --- Rust / Cargo -----------------------------------------------------------
+# Compiled artifacts and the incremental build cache. The workspace lockfile
+# (Cargo.lock) is intentionally NOT ignored: this repo produces binaries
+# (settlement job, extension), so a committed lockfile gives reproducible builds.
+/target
+**/target
+
+# --- Foundry (Solidity contracts under chain/) ------------------------------
+# Compiler output and cache produced by `forge build`.
+chain/out
+chain/cache
+# Locally-generated deployment address maps and epoch proof dumps.
+chain/deployments/localhost.json
+chain/out/
+
+# --- WebAssembly / extension build (WP6) ------------------------------------
+clients/browser-ext/dist
+clients/browser-ext/pkg
+
+# --- Editor / OS noise ------------------------------------------------------
+*.swp
+.DS_Store

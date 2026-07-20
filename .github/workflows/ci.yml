@@ -1,0 +1,75 @@
+# Continuous integration for the Clean Web Economy.
+#
+# Two independent jobs run on every push and pull request:
+#   * `rust`     — formats, lints, and tests the entire Cargo workspace.
+#   * `contracts`— builds and tests the Solidity contracts with Foundry.
+# Keeping them separate means a Solidity change and a Rust change surface their
+# failures independently, and the jobs run in parallel.
+name: CI
+
+# Run on pushes to any branch and on pull requests, so work is validated before
+# it is merged and whenever it is backed up to the remote.
+on:
+  push:
+  pull_request:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Rust workspace: fmt (style), clippy (lint, warnings are errors), and tests.
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Rust workspace (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the repository at the commit under test.
+      - uses: actions/checkout@v4
+
+      # Install the pinned stable toolchain plus the components CI needs. The
+      # channel/target here mirror rust-toolchain.toml so local and CI agree.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      # Cache the cargo registry and build outputs to keep CI fast.
+      - uses: Swatinem/rust-cache@v2
+
+      # Fail the build on any formatting deviation.
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      # Lint every crate and every target (libs, bins, tests). `-D warnings`
+      # promotes all warnings to errors so lint debt cannot accumulate.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Run the full workspace test suite.
+      - name: Test
+        run: cargo test --workspace
+
+  # ---------------------------------------------------------------------------
+  # Solidity contracts: compile and run the Foundry test suite.
+  # ---------------------------------------------------------------------------
+  contracts:
+    name: Contracts (Foundry)
+    runs-on: ubuntu-latest
+    # `chain/` is a self-contained Foundry project; run every step from there.
+    defaults:
+      run:
+        working-directory: chain
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install forge/cast/anvil. forge-std is vendored under chain/lib, so no
+      # dependency fetch step is required.
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # Compile the contracts; fails on any Solidity error.
+      - name: Build
+        run: forge build
+
+      # Run the Solidity test suite (`*.t.sol`).
+      - name: Test
+        run: forge test -vvv

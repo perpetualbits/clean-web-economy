@@ -2,9 +2,21 @@
 
 # Phase 1 — MVP (Music): Concrete Implementation Plan
 
-**Status:** Proposed
+**Status:** In progress (execution started 2026-07-20 on branch `phase1-mvp-music`)
 **Scope source:** `ROADMAP.md` Phase 1, detailed against `docs/dev_friendly_spec_v0.2.md` and the specs in `docs/specs/`
 **Baseline:** repo state as of commit `518eee7`
+
+> **Language addendum (2026-07-20).** This plan was originally drafted assuming a
+> TypeScript/pnpm stack (decision D6) with a Python DAPR simulator (WP2). Per project
+> direction, Phase 1 is implemented in **Rust wherever practical**, with two deliberate
+> exceptions where "something else is really needed":
+> - **Smart contracts stay Solidity on EVM** (decision D1 unchanged; Foundry/Anvil devnet).
+> - **The browser extension** uses a **Rust core compiled to WASM** behind a thin JS/MV3 shim.
+>
+> Everything else — `libs/*`, the DAPR simulator (a Rust crate shared with the settlement
+> job as a single source of payout-math truth), the settlement job, and the workspace
+> tooling — is Rust (a Cargo workspace, not pnpm). This overrides D6 and the WP2 language
+> choice; all other work-package content below stands. See §3 for the amended decisions.
 
 ---
 
@@ -66,7 +78,7 @@ These resolve the "Open Questions for Dev" (dev spec §14) far enough to build P
 | D3 | FP format | 256-bit hex ID, `fp:` prefix, per `docs/specs/fingerprinting_specification.md` §4; stub computes SHA-256 over samples | Deterministic, spec-compatible shape; real perceptual FP replaces the internals in Phase 2 |
 | D4 | FP → work resolution | **Local static lookup table** shipped with the extension (JSON manifest), behind a `HubClient` interface | Discovery Hub is Phase 2; the interface isolates the swap |
 | D5 | Settlement trust model | Single trusted off-chain aggregator (`settle_epoch.ts`) commits a Merkle root; contract only verifies withdrawals against the root | Matches dev spec §5.3; decentralized aggregation is out of scope (`docs/specs/rollup_aggregation_and_settlement_Interface_specification.md` is the later target) |
-| D6 | Package manager / language | pnpm workspace, TypeScript everywhere except contracts and sims (Python) | dev spec §12 already assumes pnpm |
+| D6 | Package manager / language | **Cargo workspace, Rust everywhere except Solidity contracts** (browser extension = Rust→WASM + thin JS/MV3 shim; DAPR sim = Rust crate shared with settlement). *(Amended 2026-07-20; originally pnpm+TypeScript with a Python sim.)* | Project direction: "Rust unless something else is really needed." Solidity/EVM and the browser's JS shim are the two "really needed" exceptions. Sharing the DAPR math as one Rust crate removes the Python↔Rust rounding-drift risk. |
 
 ---
 

@@ -1,0 +1,26 @@
+# Foundry configuration for the CWE on-chain contracts.
+#
+# This is the ONE non-Rust part of the workspace (decision D1/D6): the four
+# Phase 1 contracts are Solidity, built and tested with Foundry and deployed to
+# a local Anvil devnet. Everything off-chain is Rust.
+[profile.default]
+# The existing contracts live under `contracts/` (rather than Foundry's default
+# `src/`), so point the compiler there. WP1 adds an `interfaces/` subfolder here.
+src = "contracts"
+out = "out"              # compiled artifacts / ABIs (git-ignored)
+libs = ["lib"]           # dependencies (forge-std, OpenZeppelin) vendored here
+test = "test"            # Solidity tests (`*.t.sol`) land here in WP1
+script = "script"        # deploy scripts (`Deploy.s.sol`) land here in WP1
+
+# Pin the Solidity compiler so every build is reproducible. 0.8.24 matches the
+# pragma already declared in ICWERegistry.sol and enables the modern features
+# (custom errors, transient storage guards) the Phase 1 contracts use.
+solc = "0.8.24"
+optimizer = true
+optimizer_runs = 200     # a balanced default for contracts called a moderate number of times
+
+# Import remapping so contracts can `import "forge-std/Test.sol"` etc. without
+# long relative paths. Added to as dependencies (e.g. OpenZeppelin) arrive in WP1.
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+]

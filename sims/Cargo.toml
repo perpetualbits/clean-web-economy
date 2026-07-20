@@ -1,0 +1,27 @@
+# WP2 — DAPR (Decentralised Aggregated Payout & Reconciliation) reference crate.
+#
+# This crate is the SINGLE SOURCE OF TRUTH for the Phase 1 payout math. The
+# off-chain settlement job (WP5) links this same crate rather than re-deriving
+# the formula, which removes the risk of the simulator and the real settlement
+# disagreeing (the Python-vs-Rust rounding-drift risk the plan flagged).
+#
+# It builds as a library (the math, consumed by WP5) plus a small binary that
+# runs the simulation over CSV fixtures and emits the expected-output JSON oracle.
+[package]
+name = "cwe-dapr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "DAPR payout-math reference implementation and simulator for the Clean Web Economy"
+
+[dependencies]
+serde.workspace = true         # (de)serialise usage rows and payout results
+serde_json.workspace = true    # emit the *_expected.json oracle consumed by WP5
+thiserror.workspace = true     # typed errors for malformed fixtures
+
+[[bin]]
+# The `simulate` binary loads a usage CSV, runs the reference math, and writes
+# the canonical expected-output JSON used as the cross-check oracle in WP5.
+name = "simulate"
+path = "src/bin/simulate.rs"

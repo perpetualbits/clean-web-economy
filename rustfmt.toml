@@ -1,0 +1,8 @@
+# Formatting rules applied by `cargo fmt` across every Rust crate in the
+# workspace. Kept intentionally close to rustfmt defaults so the style is
+# unsurprising to Rust developers; only the widely-agreed niceties are enabled.
+edition = "2021"
+max_width = 100          # a comfortable line length for side-by-side diffs
+# Note: import-grouping options (imports_granularity / group_imports) are only
+# honoured by nightly rustfmt, so they are intentionally omitted here to keep the
+# stable-toolchain `cargo fmt` run warning-free.

@@ -1,0 +1,21 @@
+# WP4 — wallet, commitments, and session accounting.
+#
+# This crate holds the client-side building blocks that both the browser
+# extension (WP6) and the settlement job (WP5) share: the keccak256 usage
+# commitments, the `ZK` seam (a structural placeholder in Phase 1 that real
+# circuits replace later — decision D2), and the epoch-aware session store that
+# accrues listening minutes.
+[package]
+name = "cwe-wallet-zk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Wallet, keccak256 commitments, ZK seam, and session accounting for the Clean Web Economy client"
+
+[dependencies]
+tiny-keccak.workspace = true   # keccak256 — MUST match the on-chain commitment hash
+hex.workspace = true           # hex rendering of commitments and work ids
+serde.workspace = true         # serialise sessions/commitments for storage & disclosure
+serde_json.workspace = true
+thiserror.workspace = true     # typed errors for accrual/flush failures

@@ -1,0 +1,16 @@
+# WP3 — the CWE fingerprint library.
+#
+# Phase 1 ships a DETERMINISTIC STUB (SHA-256 over the audio sample buffer,
+# decision D3); real perceptual fingerprinting is Phase 2. The public API shape
+# is chosen so the internals can be swapped without touching callers.
+[package]
+name = "cwe-fingerprint"
+version.workspace = true       # inherit the shared workspace version
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic Phase 1 fingerprint stub (SHA-256 over samples) for the Clean Web Economy"
+
+[dependencies]
+sha2.workspace = true          # the hash backing the Phase 1 stub
+hex.workspace = true           # render digests as the fp:<64 hex> id format
