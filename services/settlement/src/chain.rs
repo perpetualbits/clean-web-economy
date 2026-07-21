@@ -9,9 +9,10 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::str::FromStr;
 
+use alloy::network::TransactionBuilder;
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder};
-use alloy::rpc::types::Filter;
+use alloy::rpc::types::{Filter, TransactionRequest};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
 use alloy::sol_types::SolEvent;
@@ -42,6 +43,10 @@ sol! {
     #[sol(rpc)]
     contract Payouts {
         function commitEpoch(uint256 epochId, bytes32 merkleRoot, uint256 totalCredits) external;
+    }
+    #[sol(rpc)]
+    contract Escrow {
+        function commit(uint256 epochId, bytes32 workId, uint256 amount) external;
     }
 }
 
@@ -126,10 +131,18 @@ pub async fn run(cfg: &Config) -> Result<Settlement, BoxErr> {
         }
     }
 
-    // Compute the settlement (payouts, root, proofs).
-    let settlement = settle(cfg.epoch, &Dataset { tier_fees, usage })?;
+    // Works the client recognized by fingerprint (Tier 2) are escrowed; the rest
+    // (Tier 1, signed) pay directly. The disclosure file declares the escrow set.
+    let escrow_works: std::collections::BTreeSet<String> = disclosure
+        .escrow_works
+        .iter()
+        .map(|w| w.to_string())
+        .collect();
 
-    // Commit the epoch root on-chain and wait for the transaction to land.
+    // Compute the settlement, split into direct (Merkle) and escrow buckets.
+    let settlement = settle(cfg.epoch, &Dataset { tier_fees, usage }, &escrow_works)?;
+
+    // Commit the direct (signed) epoch root to CWEPayouts and wait for it to land.
     let pending = payouts
         .commitEpoch(
             U256::from(settlement.epoch),
@@ -140,9 +153,41 @@ pub async fn run(cfg: &Config) -> Result<Settlement, BoxErr> {
         .await?;
     let receipt = pending.get_receipt().await?;
     eprintln!(
-        "committed epoch {} in tx {:#x}",
+        "committed epoch {} direct root in tx {:#x}",
         settlement.epoch, receipt.transaction_hash
     );
+
+    // Route fingerprint-matched credit to escrow. The escrow contract must hold the
+    // funds before commit (its solvency check), so the aggregator funds it with the
+    // escrow total first. (Production would source this from the subscription pool;
+    // for the MVP the aggregator funds it.)
+    if !settlement.escrow.is_empty() {
+        let escrow_addr = Address::from_str(&cfg.deployments.escrow)?;
+        let escrow = Escrow::new(escrow_addr, &provider);
+        // Fund the escrow with the total to be committed this epoch.
+        let fund = TransactionRequest::default()
+            .with_to(escrow_addr)
+            .with_value(U256::from(settlement.escrow_total));
+        provider.send_transaction(fund).await?.get_receipt().await?;
+        // Commit each fingerprint-matched work's escrowed credit.
+        for entry in &settlement.escrow {
+            escrow
+                .commit(
+                    U256::from(settlement.epoch),
+                    B256::from(entry.work_id.0),
+                    U256::from(entry.amount),
+                )
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+        }
+        eprintln!(
+            "escrowed {} work(s), total {}",
+            settlement.escrow.len(),
+            settlement.escrow_total
+        );
+    }
 
     // Persist the withdrawal proofs for creators to claim with.
     if let Some(parent) = cfg.out_path.parent() {

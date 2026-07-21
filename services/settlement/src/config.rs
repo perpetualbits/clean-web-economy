@@ -17,6 +17,8 @@ pub struct Deployments {
     pub consumption: String,
     /// The `CWEPayouts` address (for committing the epoch root).
     pub payouts: String,
+    /// The `CWEEscrow` address (for committing fingerprint-matched credit).
+    pub escrow: String,
 }
 
 /// Everything the settlement run needs.

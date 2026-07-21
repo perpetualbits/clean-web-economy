@@ -19,6 +19,11 @@ use serde::{Deserialize, Serialize};
 pub struct Disclosure {
     /// Openings keyed by the submitting user's address.
     pub users: BTreeMap<String, Vec<Opening>>,
+    /// Works recognized via perceptual fingerprint (Tier 2) this epoch — their
+    /// credit is routed to escrow rather than paid directly. Absent/empty means
+    /// every work was signed-recognized (Tier 1).
+    #[serde(default)]
+    pub escrow_works: Vec<cwe_wallet_zk::Bytes32>,
 }
 
 impl Disclosure {
