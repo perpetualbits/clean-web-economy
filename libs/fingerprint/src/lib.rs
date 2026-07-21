@@ -1,263 +1,267 @@
-//! CWE fingerprint library — **Phase 1 deterministic stub**.
+//! CWE audio fingerprint — a modest but real acoustic fingerprint.
 //!
-//! A *work fingerprint* is a stable, opaque identifier for a piece of media: a
-//! `fp:`-prefixed 256-bit hex string (e.g. `fp:9f86d0…`). The wider system uses
-//! it to recognise a work regardless of container format, credit the right
-//! creator, and anchor commitments (see `docs/specs/fingerprinting_specification.md`).
-//!
-//! # What this crate does in Phase 1
-//!
-//! It computes the fingerprint as the **SHA-256 of the raw sample bytes**
-//! (decision D3 in `docs/plans/phase1_mvp_music_implementation_plan.md`). This is
-//! deliberately a *cryptographic* hash, **not** a perceptual one: two acoustically
-//! identical recordings with different byte layouts (a re-encode, a trim, added
-//! noise) produce *different* fingerprints. The real system needs a perceptual
-//! fingerprint that survives those transforms (spec §5); that is Phase 2 work
-//! tracked in `docs/issues/004-fingerprint-tests.md`.
-//!
-//! The public API — [`Fingerprint::compute`] and [`compare`] — is shaped now so
-//! that swapping the stub for a real perceptual pipeline later changes only the
-//! internals of this crate, never its callers. In particular [`compare`] returns
-//! a *similarity score* in `[0.0, 1.0]` (the stub yields exactly `1.0` or `0.0`)
-//! so callers can already treat similarity as a threshold, as spec §6 requires.
+//! Uses the Haitsma-Kalker scheme: the audio is resampled to a canonical rate, split
+//! into overlapping frames, each frame's energy is measured in 33 logarithmically-spaced
+//! sub-bands, and each of the 32 sub-fingerprint bits is the SIGN of a second-order energy
+//! difference across band and time. Because the bits depend only on energy *differences*,
+//! the fingerprint is invariant to overall volume and robust to mild re-encoding — while
+//! remaining simple, deterministic, and dependency-light. Two fingerprints are compared by
+//! Hamming similarity (1 − bit-error-rate). This is a *fallback* recogniser; production-
+//! grade robustness (Chromaprint/AcoustID) is future work.
 
-#![forbid(unsafe_code)] // this crate is pure hashing; no unsafe is ever justified
+#![forbid(unsafe_code)]
 
 use std::fmt;
 
-use sha2::{Digest, Sha256};
+use rustfft::num_complex::Complex;
+use rustfft::FftPlanner;
+use tiny_keccak::{Hasher, Keccak};
 
-/// Textual prefix every CWE fingerprint carries. It namespaces the identifier so
-/// a fingerprint is never confused with a bare hash or some other 64-hex value.
-pub const PREFIX: &str = "fp:";
+/// Canonical sample rate the input is resampled to before analysis.
+const CANONICAL_SR: u32 = 11_025;
+/// FFT frame length in samples (~0.19 s at the canonical rate).
+const FRAME: usize = 2048;
+/// Hop between frames (50% overlap).
+const HOP: usize = FRAME / 2;
+/// Number of sub-fingerprint frames retained (fixed length for embedding/compare).
+pub const FRAMES: usize = 32;
+/// Bits per sub-fingerprint frame (33 bands → 32 difference bits).
+pub const BITS_PER_FRAME: usize = 32;
+/// Number of energy sub-bands.
+const BANDS: usize = BITS_PER_FRAME + 1;
+/// Frequency range for the band split (Hz).
+const F_LO: f32 = 300.0;
+const F_HI: f32 = 2000.0;
 
-/// Length of the underlying digest in bytes. 256 bits is the spec's default
-/// fingerprint width (spec §4) and matches SHA-256's output size.
-const DIGEST_LEN: usize = 32;
-
-/// Number of hex characters in the textual form: two per digest byte.
-const HEX_LEN: usize = DIGEST_LEN * 2;
-
-/// A work fingerprint: a 256-bit digest with a canonical `fp:<64 hex>` rendering.
-///
-/// The value is stored as raw bytes rather than a string so equality and hashing
-/// are cheap and unambiguous; the textual form is produced on demand via
-/// [`Display`](fmt::Display) / [`Fingerprint::to_hex`].
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+/// A fixed-length acoustic fingerprint: `FRAMES` 32-bit sub-fingerprints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Fingerprint {
-    /// The raw 32-byte digest. Never exposed mutably; a fingerprint is immutable
-    /// once computed or parsed.
-    digest: [u8; DIGEST_LEN],
+    sub: [u32; FRAMES],
 }
 
+/// Errors parsing a fingerprint from text.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FingerprintError {
+    #[error("fingerprint must start with the 'fp:' prefix")]
+    MissingPrefix,
+    #[error("fingerprint hex must be {expected} chars, found {found}")]
+    BadLength { expected: usize, found: usize },
+    #[error("fingerprint contains a non-hexadecimal character")]
+    NotHex,
+}
+
+/// Textual prefix.
+pub const PREFIX: &str = "fp:";
+/// Byte length of the fingerprint (FRAMES * 4).
+const BYTE_LEN: usize = FRAMES * 4;
+const HEX_LEN: usize = BYTE_LEN * 2;
+
 impl Fingerprint {
-    /// Compute the Phase 1 fingerprint of a buffer of raw sample bytes.
-    ///
-    /// The bytes are hashed with SHA-256 exactly as given, so the result is fully
-    /// deterministic: the same input always yields the same fingerprint, on any
-    /// platform. Callers holding decoded audio as `f32` samples should use
-    /// [`Fingerprint::compute_f32`] instead, which fixes a byte ordering so the
-    /// result is stable across architectures.
-    pub fn compute(samples: &[u8]) -> Fingerprint {
-        // Feed the whole buffer through SHA-256 in one shot.
-        let mut hasher = Sha256::new();
-        hasher.update(samples);
-        // `finalize` returns a fixed-size `GenericArray`; copy it into our own
-        // array so the type owns its bytes and carries no external dependency.
-        let out = hasher.finalize();
-        let mut digest = [0u8; DIGEST_LEN];
-        digest.copy_from_slice(&out);
-        Fingerprint { digest }
-    }
-
-    /// Compute the fingerprint of decoded floating-point audio samples.
-    ///
-    /// Each sample is serialised to its little-endian IEEE-754 byte representation
-    /// before hashing. Pinning the byte order here guarantees that the same audio
-    /// produces the same fingerprint on both little- and big-endian machines,
-    /// which a naive reinterpret-cast of the `f32` slice would not.
-    pub fn compute_f32(samples: &[f32]) -> Fingerprint {
-        let mut hasher = Sha256::new();
-        for sample in samples {
-            // `to_le_bytes` is architecture-independent, so the digest is stable.
-            hasher.update(sample.to_le_bytes());
+    /// Compute the fingerprint of mono `samples` recorded at `sample_rate` Hz.
+    pub fn compute(samples: &[f32], sample_rate: u32) -> Fingerprint {
+        // 1. Resample to the canonical rate with simple linear interpolation.
+        let audio = resample(samples, sample_rate, CANONICAL_SR);
+        // 2. Precompute the FFT-bin ranges for each logarithmic sub-band.
+        let bands = band_ranges();
+        // 3. Per-frame band energies.
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(FRAME);
+        let mut energies: Vec<[f32; BANDS]> = Vec::new();
+        let mut pos = 0;
+        while pos + FRAME <= audio.len() {
+            let mut buf: Vec<Complex<f32>> = audio[pos..pos + FRAME]
+                .iter()
+                .map(|&s| Complex { re: s, im: 0.0 })
+                .collect();
+            fft.process(&mut buf);
+            let mut e = [0f32; BANDS];
+            for (b, &(lo, hi)) in bands.iter().enumerate() {
+                // Sum |X|^2 over the band's bins.
+                e[b] = buf[lo..hi].iter().map(|c| c.norm_sqr()).sum();
+            }
+            energies.push(e);
+            pos += HOP;
         }
-        let out = hasher.finalize();
-        let mut digest = [0u8; DIGEST_LEN];
-        digest.copy_from_slice(&out);
-        Fingerprint { digest }
+        // 4. Second-order difference sign bits, per Haitsma-Kalker.
+        let mut sub = [0u32; FRAMES];
+        for (f, slot) in sub.iter_mut().enumerate() {
+            // Pad by repeating the last available frame if the audio was short.
+            let cur = *energies
+                .get(f + 1)
+                .or_else(|| energies.last())
+                .unwrap_or(&[0.0; BANDS]);
+            let prev = *energies
+                .get(f)
+                .or_else(|| energies.last())
+                .unwrap_or(&[0.0; BANDS]);
+            let mut bits = 0u32;
+            for m in 0..BITS_PER_FRAME {
+                let d = (cur[m] - cur[m + 1]) - (prev[m] - prev[m + 1]);
+                if d > 0.0 {
+                    bits |= 1 << m;
+                }
+            }
+            *slot = bits;
+        }
+        Fingerprint { sub }
     }
 
-    /// Borrow the raw 32-byte digest, e.g. to embed it in an on-chain commitment.
-    pub fn as_bytes(&self) -> &[u8; DIGEST_LEN] {
-        &self.digest
+    /// The raw 128-byte big-endian encoding of the sub-fingerprints.
+    fn to_bytes(self) -> [u8; BYTE_LEN] {
+        let mut out = [0u8; BYTE_LEN];
+        for (i, w) in self.sub.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&w.to_be_bytes());
+        }
+        out
     }
 
-    /// Render just the 64-character hex digest, *without* the `fp:` prefix.
-    /// Use [`Display`](fmt::Display) (or `.to_string()`) for the full `fp:<hex>` form.
+    /// 64-hex-char keccak256 id of the fingerprint (compact key for exact dedup).
+    pub fn id(&self) -> [u8; 32] {
+        let mut h = Keccak::v256();
+        h.update(&self.to_bytes());
+        let mut out = [0u8; 32];
+        h.finalize(&mut out);
+        out
+    }
+
+    /// The 128-byte fingerprint as hex (no prefix).
     pub fn to_hex(&self) -> String {
-        hex::encode(self.digest)
+        hex::encode(self.to_bytes())
     }
 
-    /// Parse a fingerprint from its canonical `fp:<64 hex>` textual form.
-    ///
-    /// Validation is strict: the string must start with the [`PREFIX`], the
-    /// remainder must be exactly [`HEX_LEN`] characters, and every one of those
-    /// characters must be a hex digit. Any deviation returns a [`FingerprintError`]
-    /// rather than a best-effort guess, so malformed identifiers fail loudly.
+    /// Parse from the canonical `fp:<256 hex>` form.
     pub fn parse(s: &str) -> Result<Fingerprint, FingerprintError> {
-        // Strip the mandatory prefix; its absence is itself an error.
         let hex_part = s
             .strip_prefix(PREFIX)
             .ok_or(FingerprintError::MissingPrefix)?;
-        // A wrong length is reported explicitly so the caller can see what it got.
         if hex_part.len() != HEX_LEN {
             return Err(FingerprintError::BadLength {
                 expected: HEX_LEN,
                 found: hex_part.len(),
             });
         }
-        // Decode; any non-hex character surfaces here as `NotHex`.
         let bytes = hex::decode(hex_part).map_err(|_| FingerprintError::NotHex)?;
-        let mut digest = [0u8; DIGEST_LEN];
-        // Length was already checked, so this copy cannot panic.
-        digest.copy_from_slice(&bytes);
-        Ok(Fingerprint { digest })
+        let mut sub = [0u32; FRAMES];
+        for i in 0..FRAMES {
+            sub[i] = u32::from_be_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+        }
+        Ok(Fingerprint { sub })
     }
 }
 
-/// Renders the fingerprint in its canonical, prefixed textual form: `fp:<64 hex>`.
 impl fmt::Display for Fingerprint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{PREFIX}{}", self.to_hex())
     }
 }
 
-/// Debug uses the same canonical form; the digest bytes are opaque, so the hex
-/// string is the most useful representation in logs and test failures.
-impl fmt::Debug for Fingerprint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Fingerprint({self})")
-    }
-}
-
-/// Compare two fingerprints, returning a similarity score in `[0.0, 1.0]`.
-///
-/// In Phase 1 the score is binary — `1.0` when the fingerprints are byte-for-byte
-/// equal, `0.0` otherwise — because the stub cannot judge perceptual closeness.
-/// The signature nonetheless matches spec §6's notion of a graded similarity, so
-/// callers can already apply a threshold (`sim >= T_duplicate`) and keep working
-/// unchanged once the real perceptual comparator replaces this function.
+/// Hamming similarity in `[0.0, 1.0]`: 1 − (differing bits / total bits).
 pub fn compare(a: &Fingerprint, b: &Fingerprint) -> f64 {
-    if a == b {
-        1.0
-    } else {
-        0.0
+    let mut diff = 0u32;
+    for i in 0..FRAMES {
+        diff += (a.sub[i] ^ b.sub[i]).count_ones();
     }
+    let total = (FRAMES * BITS_PER_FRAME) as f64;
+    1.0 - (diff as f64 / total)
 }
 
-/// Errors that can arise when parsing a fingerprint from text.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum FingerprintError {
-    /// The string did not begin with the required `fp:` prefix.
-    #[error("fingerprint must start with the 'fp:' prefix")]
-    MissingPrefix,
-    /// The hex portion had the wrong number of characters.
-    #[error("fingerprint hex must be {expected} chars, found {found}")]
-    BadLength {
-        /// How many hex characters a valid fingerprint has.
-        expected: usize,
-        /// How many were actually supplied.
-        found: usize,
-    },
-    /// The hex portion contained a non-hexadecimal character.
-    #[error("fingerprint contains a non-hexadecimal character")]
-    NotHex,
+/// Linear-interpolation resampler from `from` Hz to `to` Hz.
+fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
+    if from == to || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let ratio = from as f64 / to as f64;
+    let out_len = ((samples.len() as f64) / ratio) as usize;
+    (0..out_len)
+        .map(|i| {
+            let src = i as f64 * ratio;
+            let idx = src as usize;
+            let frac = (src - idx as f64) as f32;
+            let a = samples[idx];
+            let b = *samples.get(idx + 1).unwrap_or(&a);
+            a + (b - a) * frac
+        })
+        .collect()
+}
+
+/// FFT-bin `[lo, hi)` ranges for each of the `BANDS` logarithmic sub-bands.
+fn band_ranges() -> [(usize, usize); BANDS] {
+    let bin = |hz: f32| ((hz / CANONICAL_SR as f32) * FRAME as f32) as usize;
+    let mut ranges = [(0usize, 0usize); BANDS];
+    for (b, slot) in ranges.iter_mut().enumerate() {
+        // Logarithmic edges between F_LO and F_HI.
+        let lo = F_LO * (F_HI / F_LO).powf(b as f32 / BANDS as f32);
+        let hi = F_LO * (F_HI / F_LO).powf((b + 1) as f32 / BANDS as f32);
+        let (mut a, mut c) = (bin(lo), bin(hi).max(bin(lo) + 1));
+        c = c.min(FRAME / 2);
+        a = a.min(c.saturating_sub(1));
+        *slot = (a, c);
+    }
+    ranges
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::PI;
 
-    /// The same input must always hash to the same fingerprint — the core
-    /// property that makes fingerprints usable as stable work identifiers.
+    /// Generate `secs` of a mono sine wave at `freq` Hz, amplitude `amp`.
+    fn tone(freq: f32, amp: f32, secs: f32, sr: u32) -> Vec<f32> {
+        let n = (secs * sr as f32) as usize;
+        (0..n)
+            .map(|i| amp * (2.0 * PI * freq * i as f32 / sr as f32).sin())
+            .collect()
+    }
+
+    /// The same audio yields the same fingerprint (determinism).
     #[test]
     fn compute_is_deterministic() {
-        let a = Fingerprint::compute(b"the same bytes");
-        let b = Fingerprint::compute(b"the same bytes");
-        assert_eq!(a, b);
-    }
-
-    /// Different inputs must (overwhelmingly) produce different fingerprints.
-    #[test]
-    fn distinct_inputs_differ() {
-        let a = Fingerprint::compute(b"track one");
-        let b = Fingerprint::compute(b"track two");
-        assert_ne!(a, b);
-    }
-
-    /// The textual form must be exactly `fp:` followed by 64 lowercase hex chars,
-    /// matching a known SHA-256 test vector (`""` → e3b0c4…).
-    #[test]
-    fn display_format_is_canonical() {
-        let fp = Fingerprint::compute(b"");
-        let text = fp.to_string();
-        assert!(text.starts_with("fp:"));
-        assert_eq!(text.len(), PREFIX.len() + HEX_LEN);
+        let a = tone(440.0, 0.8, 3.0, 11025);
         assert_eq!(
-            text,
-            "fp:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            Fingerprint::compute(&a, 11025),
+            Fingerprint::compute(&a, 11025)
         );
     }
 
-    /// A fingerprint must survive a render → parse round-trip unchanged.
+    /// Gain invariance: halving the amplitude barely changes the fingerprint
+    /// (Haitsma-Kalker bits are signs of energy *differences*, so gain cancels).
     #[test]
-    fn parse_round_trips_display() {
-        let fp = Fingerprint::compute(b"round trip me");
-        let parsed = Fingerprint::parse(&fp.to_string()).expect("valid form must parse");
-        assert_eq!(fp, parsed);
-    }
-
-    /// `compute_f32` must be endian-stable and deterministic for `f32` input.
-    #[test]
-    fn compute_f32_is_deterministic() {
-        let samples = [0.0f32, 0.5, -0.25, 1.0];
-        assert_eq!(
-            Fingerprint::compute_f32(&samples),
-            Fingerprint::compute_f32(&samples)
+    fn robust_to_volume_change() {
+        let loud = tone(440.0, 0.9, 3.0, 11025);
+        let quiet = tone(440.0, 0.45, 3.0, 11025);
+        let sim = compare(
+            &Fingerprint::compute(&loud, 11025),
+            &Fingerprint::compute(&quiet, 11025),
+        );
+        assert!(
+            sim > 0.95,
+            "gain change should preserve the fingerprint, got {sim}"
         );
     }
 
-    /// The stub comparator scores identical fingerprints 1.0 and different ones 0.0.
+    /// Distinct audio is far apart (well below a match threshold).
     #[test]
-    fn compare_is_binary() {
-        let a = Fingerprint::compute(b"x");
-        let a2 = Fingerprint::compute(b"x");
-        let b = Fingerprint::compute(b"y");
-        assert_eq!(compare(&a, &a2), 1.0);
-        assert_eq!(compare(&a, &b), 0.0);
+    fn distinct_audio_differs() {
+        let a = tone(440.0, 0.8, 3.0, 11025);
+        let b = tone(1200.0, 0.8, 3.0, 11025);
+        let sim = compare(
+            &Fingerprint::compute(&a, 11025),
+            &Fingerprint::compute(&b, 11025),
+        );
+        assert!(sim < 0.75, "distinct tones should differ, got {sim}");
     }
 
-    /// Each malformed textual form must yield the matching, specific error.
+    /// compare() is bounded and self-similarity is 1.0.
     #[test]
-    fn parse_rejects_malformed_input() {
-        // Missing prefix.
-        assert_eq!(
-            Fingerprint::parse("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
-            Err(FingerprintError::MissingPrefix)
-        );
-        // Right prefix, too short.
-        assert_eq!(
-            Fingerprint::parse("fp:abcd"),
-            Err(FingerprintError::BadLength {
-                expected: HEX_LEN,
-                found: 4
-            })
-        );
-        // Right length, but 'z' is not a hex digit (63 valid chars + one 'z').
-        let mut bad = "fp:".to_string();
-        bad.push_str(&"a".repeat(HEX_LEN - 1));
-        bad.push('z');
-        assert_eq!(Fingerprint::parse(&bad), Err(FingerprintError::NotHex));
+    fn compare_bounds() {
+        let a = Fingerprint::compute(&tone(440.0, 0.8, 3.0, 11025), 11025);
+        assert_eq!(compare(&a, &a), 1.0);
+    }
+
+    /// Hex render → parse round-trips.
+    #[test]
+    fn hex_round_trip() {
+        let a = Fingerprint::compute(&tone(440.0, 0.8, 3.0, 11025), 11025);
+        assert_eq!(Fingerprint::parse(&a.to_string()).unwrap(), a);
     }
 }

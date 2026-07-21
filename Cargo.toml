@@ -49,8 +49,9 @@ repository = "https://github.com/perpetualbits/clean-web-economy"
 # given library and that upgrades happen in exactly one place.
 # ---------------------------------------------------------------------------
 [workspace.dependencies]
-sha2 = "0.10"          # SHA-256, used by the fingerprint stub (decision D3)
+sha2 = "0.10"          # SHA-256, retained for future crates that need it
 hex = "0.4"            # hex encoding/decoding for fp:<hex> ids and commitments
+rustfft = "6"          # FFT backend for the Haitsma-Kalker acoustic fingerprint
 serde = { version = "1", features = ["derive"] }  # (de)serialisation of fixtures/manifests
 serde_json = "1"       # JSON fixtures and the DAPR expected-output oracle
 thiserror = "2"        # ergonomic error enums for library crates

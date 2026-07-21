@@ -1,17 +1,19 @@
 # WP3 — the CWE fingerprint library.
 #
-# Phase 1 ships a DETERMINISTIC STUB (SHA-256 over the audio sample buffer,
-# decision D3); real perceptual fingerprinting is Phase 2. The public API shape
-# is chosen so the internals can be swapped without touching callers.
+# A Haitsma-Kalker acoustic fingerprint: gain-invariant sub-fingerprint bits
+# derived from per-band energy differences, compared by Hamming similarity.
+# It is a modest, dependency-light *fallback* recogniser — production-grade
+# robustness (Chromaprint/AcoustID) is future work.
 [package]
 name = "cwe-fingerprint"
 version.workspace = true       # inherit the shared workspace version
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Deterministic Phase 1 fingerprint stub (SHA-256 over samples) for the Clean Web Economy"
+description = "Haitsma-Kalker acoustic fingerprint (gain-invariant, Hamming-compared) for the Clean Web Economy"
 
 [dependencies]
-sha2.workspace = true          # the hash backing the Phase 1 stub
-hex.workspace = true           # render digests as the fp:<64 hex> id format
+rustfft.workspace = true       # FFT backend for the per-frame band energies
+hex.workspace = true           # render the fingerprint as the fp:<hex> textual form
 thiserror.workspace = true     # typed parse errors (FingerprintError)
+tiny-keccak.workspace = true   # keccak256 for the compact id()
