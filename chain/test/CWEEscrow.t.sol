@@ -132,6 +132,38 @@ contract CWEEscrowTest is Test {
         registry.registerWork(workId, CONTENT_B, payees, splits, sigs, 1000, bytes32("EU"));
     }
 
+    /// @dev Register `workId` with the "A" payee pair (60/40 split) under an
+    ///      explicit `contentId`, so two distinct work ids can share content.
+    function _registerAWithContent(bytes32 workId, bytes32 contentId) internal {
+        address payable[] memory payees = new address payable[](2);
+        payees[0] = payeeA1;
+        payees[1] = payeeA2;
+        uint96[] memory splits = new uint96[](2);
+        splits[0] = 600_000;
+        splits[1] = 400_000;
+        bytes[] memory sigs = new bytes[](2);
+        sigs[0] = _consent(payeeA1Key, workId, contentId, payeeA1, splits[0]);
+        sigs[1] = _consent(payeeA2Key, workId, contentId, payeeA2, splits[1]);
+        vm.prank(creator);
+        registry.registerWork(workId, contentId, payees, splits, sigs, 1000, bytes32("EU"));
+    }
+
+    /// @dev Register `workId` with the "B" payee pair (50/50 split) under an
+    ///      explicit `contentId`, so two distinct work ids can share content.
+    function _registerBWithContent(bytes32 workId, bytes32 contentId) internal {
+        address payable[] memory payees = new address payable[](2);
+        payees[0] = payeeB1;
+        payees[1] = payeeB2;
+        uint96[] memory splits = new uint96[](2);
+        splits[0] = 500_000;
+        splits[1] = 500_000;
+        bytes[] memory sigs = new bytes[](2);
+        sigs[0] = _consent(payeeB1Key, workId, contentId, payeeB1, splits[0]);
+        sigs[1] = _consent(payeeB2Key, workId, contentId, payeeB2, splits[1]);
+        vm.prank(creator);
+        registry.registerWork(workId, contentId, payees, splits, sigs, 1000, bytes32("EU"));
+    }
+
     /// @notice Only the aggregator may commit an escrow.
     function test_commit_onlyAggregator() public {
         vm.expectRevert(CWEEscrow.NotAggregator.selector);
@@ -140,21 +172,39 @@ contract CWEEscrowTest is Test {
 
     /// @notice Committing more credit than the pool holds is rejected.
     function test_commit_insolvent_reverts() public {
+        bytes32 workId = keccak256("work-A");
+        vm.warp(1000);
+        _registerA(workId);
+
         vm.deal(address(escrow), 1 ether);
         vm.prank(aggregator);
         vm.expectRevert(abi.encodeWithSelector(CWEEscrow.Insolvent.selector, 1 ether, 2 ether));
-        escrow.commit(EPOCH, keccak256("work"), 2 ether);
+        escrow.commit(EPOCH, workId, 2 ether);
     }
 
     /// @notice The same `(epoch, work)` pair cannot be committed twice.
     function test_commit_twice_reverts() public {
-        bytes32 workId = keccak256("work");
+        bytes32 workId = keccak256("work-A");
+        vm.warp(1000);
+        _registerA(workId);
+
         vm.deal(address(escrow), 2 ether);
         vm.startPrank(aggregator);
         escrow.commit(EPOCH, workId, 1 ether);
         vm.expectRevert(abi.encodeWithSelector(CWEEscrow.AlreadyCommitted.selector, EPOCH, workId));
         escrow.commit(EPOCH, workId, 1 ether);
         vm.stopPrank();
+    }
+
+    /// @notice Committing an unregistered work reverts, closing the fund-lock
+    ///         gap where an unregistered incumbent could never be released or
+    ///         (previously) dislodged by a challenge.
+    function test_commit_unregisteredWork_reverts() public {
+        bytes32 workId = keccak256("work-unregistered");
+        vm.deal(address(escrow), 1 ether);
+        vm.prank(aggregator);
+        vm.expectRevert(abi.encodeWithSelector(CWEEscrow.WorkNotRegistered.selector, workId));
+        escrow.commit(EPOCH, workId, 1 ether);
     }
 
     /// @notice A committed escrow cannot be released before its challenge window.
@@ -192,6 +242,10 @@ contract CWEEscrowTest is Test {
         assertEq(payeeA1.balance + payeeA2.balance, amount);
         assertTrue(escrow.isReleased(EPOCH, workId));
         assertEq(escrow.liability(), 0);
+
+        // The escrow's amount is zeroed on release, so a released escrow is no
+        // longer reported as outstanding credit.
+        assertEq(escrow.escrowOf(EPOCH, workId), 0);
     }
 
     /// @notice The same escrow cannot be released twice.
@@ -213,17 +267,20 @@ contract CWEEscrowTest is Test {
     }
 
     /// @notice A challenger with a strictly earlier registration reassigns the
-    ///         escrow; releasing then pays the challenger's payees.
+    ///         escrow; releasing then pays the challenger's payees. Both works
+    ///         share a content id, since a challenge only concerns the same
+    ///         content.
     function test_challenge_earlierRegistration_reassigns() public {
         bytes32 challengerWork = keccak256("work-challenger");
         bytes32 escrowedWork = keccak256("work-escrowed");
 
         // The challenger's work is registered first (earlier priority)...
         vm.warp(1000);
-        _registerA(challengerWork);
-        // ...the fingerprint-matched (escrowed) work registers later.
+        _registerAWithContent(challengerWork, CONTENT_A);
+        // ...the fingerprint-matched (escrowed) work, over the SAME content,
+        // registers later.
         vm.warp(2000);
-        _registerB(escrowedWork);
+        _registerBWithContent(escrowedWork, CONTENT_A);
 
         uint256 amount = 1 ether;
         vm.deal(address(escrow), amount);
@@ -252,17 +309,19 @@ contract CWEEscrowTest is Test {
         assertTrue(escrow.isReleased(EPOCH, challengerWork));
     }
 
-    /// @notice A challenger registered LATER than the escrowed work fails.
+    /// @notice A challenger registered LATER than the escrowed work fails, even
+    ///         though it shares the escrowed work's content id.
     function test_challenge_laterRegistration_reverts() public {
         bytes32 escrowedWork = keccak256("work-escrowed");
         bytes32 challengerWork = keccak256("work-challenger");
 
         // The escrowed work registers first (earlier priority)...
         vm.warp(1000);
-        _registerA(escrowedWork);
-        // ...the would-be challenger registers later, so it cannot win.
+        _registerAWithContent(escrowedWork, CONTENT_A);
+        // ...the would-be challenger, over the SAME content, registers later,
+        // so it cannot win.
         vm.warp(2000);
-        _registerB(challengerWork);
+        _registerBWithContent(challengerWork, CONTENT_A);
 
         uint256 amount = 1 ether;
         vm.deal(address(escrow), amount);
@@ -274,6 +333,68 @@ contract CWEEscrowTest is Test {
 
         // The escrow is untouched.
         assertEq(escrow.escrowOf(EPOCH, escrowedWork), amount);
+    }
+
+    /// @notice A challenge whose challenger work has a DIFFERENT content id
+    ///         than the escrowed work reverts, closing the fund-misdirection
+    ///         gap where an unrelated earlier-registered work could steal an
+    ///         escrow over different content.
+    function test_challenge_contentMismatch_reverts() public {
+        bytes32 escrowedWork = keccak256("work-escrowed");
+        bytes32 challengerWork = keccak256("work-challenger");
+
+        // The challenger's work is registered earlier, but over DIFFERENT
+        // content than the escrowed work.
+        vm.warp(1000);
+        _registerA(challengerWork); // CONTENT_A
+        vm.warp(2000);
+        _registerB(escrowedWork); // CONTENT_B
+
+        uint256 amount = 1 ether;
+        vm.deal(address(escrow), amount);
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, escrowedWork, amount);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(CWEEscrow.ContentMismatch.selector, CONTENT_B, CONTENT_A)
+        );
+        escrow.challenge(EPOCH, escrowedWork, challengerWork);
+
+        // The escrow is untouched.
+        assertEq(escrow.escrowOf(EPOCH, escrowedWork), amount);
+    }
+
+    /// @notice Challenging an escrow with itself as the challenger reverts
+    ///         instead of silently no-oping and emitting a spurious event.
+    function test_challenge_selfChallenge_reverts() public {
+        bytes32 workId = keccak256("work-A");
+        vm.warp(1000);
+        _registerA(workId);
+
+        uint256 amount = 1 ether;
+        vm.deal(address(escrow), amount);
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, workId, amount);
+
+        vm.expectRevert(abi.encodeWithSelector(CWEEscrow.SelfChallenge.selector, workId));
+        escrow.challenge(EPOCH, workId, workId);
+    }
+
+    /// @notice The arbiter must never let an unregistered work win: an
+    ///         unregistered incumbent (registration timestamp zero) must not
+    ///         be able to out-rank a registered challenger, or an unregistered
+    ///         escrow could never be dislodged or released.
+    function test_arbiter_unregisteredLoses_toRegisteredWork() public {
+        bytes32 unregisteredWork = keccak256("work-unregistered");
+        bytes32 registeredWork = keccak256("work-registered");
+
+        vm.warp(1000);
+        _registerA(registeredWork);
+
+        // Unregistered vs registered, in both argument orders: the registered
+        // work always wins.
+        assertEq(arbiter.resolve(unregisteredWork, registeredWork), registeredWork);
+        assertEq(arbiter.resolve(registeredWork, unregisteredWork), registeredWork);
     }
 
     /// @notice A payee that re-enters `release` is blocked by the guard, causing

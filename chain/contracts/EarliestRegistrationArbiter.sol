@@ -23,10 +23,16 @@ contract EarliestRegistrationArbiter is IArbiter {
     /// @inheritdoc IArbiter
     /// @dev Ties (including two unregistered works, both timestamp zero) resolve
     ///      to `workA`, so an existing escrow holder is never dislodged without a
-    ///      strictly earlier registration.
+    ///      strictly earlier registration. An unregistered work (registration
+    ///      timestamp zero) always has the WORST priority: it can never beat a
+    ///      registered competitor, even though zero would otherwise look like
+    ///      the earliest possible timestamp.
     function resolve(bytes32 workA, bytes32 workB) external view returns (bytes32 winner) {
         uint256 timeA = registry.registeredAtOf(workA);
         uint256 timeB = registry.registeredAtOf(workB);
+        if (timeA == 0 && timeB == 0) return workA;
+        if (timeA == 0) return workB;
+        if (timeB == 0) return workA;
         return timeB < timeA ? workB : workA;
     }
 }

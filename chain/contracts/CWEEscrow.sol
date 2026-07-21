@@ -45,6 +45,7 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
     struct Escrow {
         uint256 amount; // escrowed credit, in wei
         uint256 releaseEpoch; // epoch at/after which release is permitted
+        bytes32 contentId; // the content id the escrowed work was registered under
         bool committed; // whether `commit` has been called for this pair
         bool released; // whether the escrow has already been paid out
     }
@@ -87,6 +88,12 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
     error WorkNotRegistered(bytes32 workId);
     /// @dev Reverts when a payee transfer fails.
     error PayoutFailed(address payee);
+    /// @dev Reverts when challenging an escrow with a work that is itself
+    ///      already the escrow holder.
+    error SelfChallenge(bytes32 workId);
+    /// @dev Reverts when the challenger's content id does not match the
+    ///      escrowed work's content id.
+    error ContentMismatch(bytes32 escrowedContentId, bytes32 challengerContentId);
 
     /// @param registry_ The work registry (registration priority and splits source).
     /// @param aggregator_ The address permitted to commit fingerprint-matched escrows.
@@ -109,11 +116,14 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
 
     /// @inheritdoc ICWEEscrow
     /// @dev Only the aggregator may commit, and only once per `(epoch, work)`
-    ///      pair. After adding the amount to the outstanding liability, the pool
-    ///      must still cover it — otherwise the escrow is committing credit that
-    ///      cannot be paid.
+    ///      pair. The work must already be registered — this guarantees
+    ///      `release` always has payees to pay and, combined with the arbiter's
+    ///      handling of unregistered works, means an unregistered incumbent can
+    ///      never lock the escrow. The work's content id is recorded so a later
+    ///      `challenge` can be bound to the same content.
     function commit(uint256 epochId, bytes32 workId, uint256 amount) external {
         if (msg.sender != aggregator) revert NotAggregator();
+        if (!registry.isRegistered(workId)) revert WorkNotRegistered(workId);
 
         Escrow storage e = _escrows[epochId][workId];
         if (e.committed) revert AlreadyCommitted(epochId, workId);
@@ -121,6 +131,7 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
         uint256 releaseEpoch = epochId + CHALLENGE_WINDOW;
         e.amount = amount;
         e.releaseEpoch = releaseEpoch;
+        e.contentId = registry.contentIdOf(workId);
         e.committed = true;
 
         // Grow the outstanding liability and assert the pool can honour it.
@@ -134,16 +145,27 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
 
     /// @inheritdoc ICWEEscrow
     /// @dev Anyone may challenge, provided the escrow is live and its window has
-    ///      not closed. The arbiter is asked to resolve the pair; a challenger it
-    ///      favours causes the escrow to move to `(epochId, challengerWork)` with
-    ///      its amount and release epoch intact, while the old slot is cleared.
-    ///      Any credit already sitting in the challenger's own slot (from a
-    ///      separate, unrelated commit) is preserved and added to.
+    ///      not closed. The challenger's work must share the escrowed work's
+    ///      content id — this MVP requires an exact content-id match to
+    ///      challenge; perceptual/re-encode disputes are the deferred
+    ///      arbitration jury's job, not this stub. The arbiter is then asked to
+    ///      resolve the pair; a challenger it favours causes the escrow to move
+    ///      to `(epochId, challengerWork)` with its amount, release epoch, and
+    ///      content id intact, while the old slot is cleared. Any credit already
+    ///      sitting in the challenger's own slot (from a separate, unrelated
+    ///      commit) is preserved and added to.
     function challenge(uint256 epochId, bytes32 escrowedWork, bytes32 challengerWork) external {
+        if (escrowedWork == challengerWork) revert SelfChallenge(escrowedWork);
+
         Escrow storage from = _escrows[epochId][escrowedWork];
         if (!from.committed) revert NotEscrowed(epochId, escrowedWork);
         if (from.released) revert AlreadyReleased(epochId, escrowedWork);
         if (currentEpoch() >= from.releaseEpoch) revert WindowClosed(epochId, escrowedWork);
+
+        bytes32 challengerContentId = registry.contentIdOf(challengerWork);
+        if (challengerContentId != from.contentId) {
+            revert ContentMismatch(from.contentId, challengerContentId);
+        }
 
         // Consult the arbitration seam; only a challenger it names as winner
         // may take the escrow (earliest registration wins in the Phase 1 stub).
@@ -152,11 +174,13 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
 
         uint256 amount = from.amount;
         uint256 releaseEpoch = from.releaseEpoch;
+        bytes32 contentId = from.contentId;
         delete _escrows[epochId][escrowedWork];
 
         Escrow storage to = _escrows[epochId][challengerWork];
         to.amount += amount;
         to.releaseEpoch = releaseEpoch;
+        to.contentId = contentId;
         to.committed = true;
 
         emit EscrowChallenged(epochId, escrowedWork, challengerWork);
@@ -167,7 +191,9 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
     ///      epoch, loads the (possibly reassigned) work's payees, marks it
     ///      released and reduces liability (effects) before paying out
     ///      (interactions), and is `nonReentrant`. Rounding dust folds into the
-    ///      final payee so the whole escrowed amount is always dispersed.
+    ///      final payee so the whole escrowed amount is always dispersed. The
+    ///      escrow's amount is zeroed so `escrowOf` correctly reports a
+    ///      released escrow as no longer outstanding.
     function release(uint256 epochId, bytes32 workId) external nonReentrant {
         Escrow storage e = _escrows[epochId][workId];
         if (!e.committed) revert NotEscrowed(epochId, workId);
@@ -179,9 +205,11 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
         uint96[] memory splits = registry.splitsOf(workId);
         if (payees.length == 0) revert WorkNotRegistered(workId);
 
-        // Effects: mark released and reduce liability BEFORE any external call.
+        // Effects: mark released, zero the outstanding amount, and reduce
+        // liability BEFORE any external call.
         uint256 amount = e.amount;
         e.released = true;
+        e.amount = 0;
         liability -= amount;
         emit EscrowReleased(epochId, workId, amount);
 
