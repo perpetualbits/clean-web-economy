@@ -121,6 +121,14 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
     ///      handling of unregistered works, means an unregistered incumbent can
     ///      never lock the escrow. The work's content id is recorded so a later
     ///      `challenge` can be bound to the same content.
+    ///
+    ///      The challenge window runs from the CURRENT (commit) epoch, not from
+    ///      `epochId`. `epochId` is the past *usage* epoch — settlement can only
+    ///      run once that epoch has closed, so it is always behind
+    ///      `currentEpoch()`. Keying the window off `epochId` would place the
+    ///      release epoch in the past, giving a zero-length window that no one
+    ///      could challenge; keying it off `currentEpoch()` gives every commit a
+    ///      full `CHALLENGE_WINDOW` regardless of how far settlement lagged.
     function commit(uint256 epochId, bytes32 workId, uint256 amount) external {
         if (msg.sender != aggregator) revert NotAggregator();
         if (!registry.isRegistered(workId)) revert WorkNotRegistered(workId);
@@ -128,7 +136,9 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
         Escrow storage e = _escrows[epochId][workId];
         if (e.committed) revert AlreadyCommitted(epochId, workId);
 
-        uint256 releaseEpoch = epochId + CHALLENGE_WINDOW;
+        // Window is measured from commit time, so a lagging settlement still
+        // leaves a full challenge window open (see the @dev note above).
+        uint256 releaseEpoch = currentEpoch() + CHALLENGE_WINDOW;
         e.amount = amount;
         e.releaseEpoch = releaseEpoch;
         e.contentId = registry.contentIdOf(workId);

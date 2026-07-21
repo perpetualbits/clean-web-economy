@@ -309,6 +309,51 @@ contract CWEEscrowTest is Test {
         assertTrue(escrow.isReleased(EPOCH, challengerWork));
     }
 
+    /// @notice The challenge window runs from commit time, not the usage epoch,
+    ///         so a settlement that lags the usage epoch (the normal case — an
+    ///         epoch can only be settled once it has closed) still leaves a full
+    ///         window open. This reproduces the production timing that a
+    ///         same-epoch commit hides: usage in epoch 0, but settlement/commit
+    ///         several epochs later.
+    function test_commit_windowRunsFromCommitNotUsageEpoch() public {
+        bytes32 challengerWork = keccak256("work-challenger");
+        bytes32 escrowedWork = keccak256("work-escrowed");
+
+        // Both works registered in the usage epoch (epoch 0), real owner first.
+        vm.warp(1000);
+        _registerAWithContent(challengerWork, CONTENT_A);
+        vm.warp(2000);
+        _registerBWithContent(escrowedWork, CONTENT_A);
+
+        // Settlement runs five epochs after the usage epoch it is settling.
+        uint256 lateEpoch = 5;
+        vm.warp(lateEpoch * 30 days + 1);
+        uint256 amount = 1 ether;
+        vm.deal(address(escrow), amount);
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, escrowedWork, amount); // EPOCH == 0, the usage epoch
+
+        // The release epoch is one window past the COMMIT epoch (6), not past the
+        // usage epoch (which would be 1 — already elapsed, a zero-length window).
+        assertEq(escrow.releaseEpochOf(EPOCH, escrowedWork), lateEpoch + 1);
+
+        // The window is genuinely open: release is too early right after commit...
+        vm.expectRevert(abi.encodeWithSelector(CWEEscrow.TooEarly.selector, EPOCH, escrowedWork));
+        escrow.release(EPOCH, escrowedWork);
+
+        // ...and the earlier-registered real owner can still challenge and win.
+        vm.prank(challenger);
+        escrow.challenge(EPOCH, escrowedWork, challengerWork);
+        assertEq(escrow.escrowOf(EPOCH, escrowedWork), 0);
+        assertEq(escrow.escrowOf(EPOCH, challengerWork), amount);
+
+        // After the window elapses, the reassigned escrow pays the real owner.
+        vm.warp((lateEpoch + 1) * 30 days);
+        escrow.release(EPOCH, challengerWork);
+        assertEq(payeeA1.balance, 0.6 ether);
+        assertEq(payeeA2.balance, 0.4 ether);
+    }
+
     /// @notice A challenger registered LATER than the escrowed work fails, even
     ///         though it shares the escrowed work's content id.
     function test_challenge_laterRegistration_reverts() public {

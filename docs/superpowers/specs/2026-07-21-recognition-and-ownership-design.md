@@ -178,6 +178,17 @@ On-chain support:
 
 Signed (Tier 1) credits skip escrow entirely — they pay directly.
 
+**Trust limitation (Phase 1).** Which tier a usage falls into is asserted by the
+settlement **disclosure** (the `escrow_works` set), the same file that stands in
+for a ZK proof of usage (decision D2). A dishonest aggregator/discloser could
+therefore route a fingerprint-matched usage to a *direct* payout by simply
+omitting it from `escrow_works`, bypassing the escrow window entirely. The escrow
+spine is thus only as strong as the discloser's honesty in this phase. Closing
+this — proving the signed-vs-fingerprint classification, not just asserting it —
+is part of the same work that replaces the disclosure file with a real
+zero-knowledge proof (deferred with D2), and is tracked as a known gap rather
+than solved here.
+
 ---
 
 ## 6. The perceptual fingerprint (modest but real)

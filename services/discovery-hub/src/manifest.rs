@@ -75,9 +75,10 @@ pub enum ManifestError {
 /// matching the Solidity `CWERegistry.consentDigest`
 /// (`keccak256(abi.encode(workId, contentId, payee, share))`).
 ///
-/// `share` is encoded as a `U256`: `abi.encode` right-pads a `uint96` into the
-/// same 32-byte word as a `uint256`, so for any `share < 2^96` the encoded
-/// bytes are identical to the contract's `uint96` encoding.
+/// `share` is encoded as a `U256`: `abi.encode` left-pads a `uint96` (numeric
+/// ABI words are right-aligned) into the same 32-byte word as a `uint256`, so
+/// for any `share < 2^96` the encoded bytes are identical to the contract's
+/// `uint96` encoding.
 pub fn consent_digest(
     work_id: Bytes32,
     content_id: Bytes32,
