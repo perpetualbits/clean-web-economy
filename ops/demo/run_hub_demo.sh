@@ -56,9 +56,16 @@ REG=$(jq -r .registry "$ROOT/chain/deployments/localhost.json")
 send() { cast send --rpc-url $RPC --private-key "$1" "${@:2}" >/dev/null; }
 send $DEPLOYER $REG "setVerifiedCreator(address,bool)" $DEPLOYER_ADDR true
 WORK_ID=$(cast format-bytes32-string "workA"); EU=$(cast format-bytes32-string "EU")
+CONTENT_ID=$(cast keccak "content-workA")
 PAYEE=$(cast wallet address ${KEYS[2]})
-send $DEPLOYER $REG "registerWork(bytes32,address[],uint96[],uint256,bytes32)" \
-  $WORK_ID "[$PAYEE]" "[1000000]" 1000000 $EU
+# Consent: read the digest on-chain, then EIP-191 personal-sign it (`cast wallet
+# sign` applies the "\x19Ethereum Signed Message:\n32" prefix and hashes) so the
+# registry's ecrecover recovers exactly the payee that signed.
+DIGEST=$(cast call --rpc-url $RPC $REG "consentDigest(bytes32,bytes32,address,uint96)(bytes32)" \
+  "$WORK_ID" "$CONTENT_ID" "$PAYEE" 1000000)
+SIG=$(cast wallet sign --private-key ${KEYS[2]} "$DIGEST")
+send $DEPLOYER $REG "registerWork(bytes32,bytes32,address[],uint96[],bytes[],uint256,bytes32)" \
+  $WORK_ID $CONTENT_ID "[$PAYEE]" "[1000000]" "[$SIG]" 1000000 $EU
 
 # --- start the hub, pointed at the freshly deployed registry ----------------
 REGISTRY=$REG RPC_URL=$RPC BIND=$HUB_BIND SNAPSHOT="$WORK/index.json" "$ROOT/target/debug/cwe-hub" & HUBPID=$!

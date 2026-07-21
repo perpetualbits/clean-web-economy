@@ -50,11 +50,15 @@ contract CWEPayoutsTest is Test {
     address internal creator = makeAddr("creator");
     address internal aggregator = makeAddr("aggregator");
 
-    address payable internal payee1 = payable(makeAddr("payee1"));
-    address payable internal payee2 = payable(makeAddr("payee2"));
+    address payable internal payee1;
+    address payable internal payee2;
+    uint256 internal payee1Key;
+    uint256 internal payee2Key;
 
     bytes32 internal constant WORK_A = keccak256("work-A");
     bytes32 internal constant WORK_B = keccak256("work-B");
+    bytes32 internal constant CONTENT_A = keccak256("content-A");
+    bytes32 internal constant CONTENT_B = keccak256("content-B");
     uint256 internal constant EPOCH = 7;
 
     /// @notice Deploy registry + payouts, register WORK_A with a 60/40 split.
@@ -66,14 +70,35 @@ contract CWEPayoutsTest is Test {
 
         payouts = new CWEPayouts(registry, aggregator);
 
+        (address p1, uint256 k1) = makeAddrAndKey("payee1");
+        (address p2, uint256 k2) = makeAddrAndKey("payee2");
+        payee1 = payable(p1);
+        payee2 = payable(p2);
+        payee1Key = k1;
+        payee2Key = k2;
+
         address payable[] memory payees = new address payable[](2);
         payees[0] = payee1;
         payees[1] = payee2;
         uint96[] memory splits = new uint96[](2);
         splits[0] = 600_000; // 60%
         splits[1] = 400_000; // 40%
+        bytes[] memory sigs = new bytes[](2);
+        sigs[0] = _consent(payee1Key, WORK_A, CONTENT_A, payee1, splits[0]);
+        sigs[1] = _consent(payee2Key, WORK_A, CONTENT_A, payee2, splits[1]);
         vm.prank(creator);
-        registry.registerWork(WORK_A, payees, splits, 1000, bytes32("EU"));
+        registry.registerWork(WORK_A, CONTENT_A, payees, splits, sigs, 1000, bytes32("EU"));
+    }
+
+    /// @dev EIP-191 personal-sign of the consent digest by key `k`, mirroring
+    ///      `CWERegistryTest._consent` so both suites build valid consents identically.
+    function _consent(uint256 k, bytes32 w, bytes32 c, address payee, uint96 share)
+        internal view returns (bytes memory)
+    {
+        bytes32 digest = registry.consentDigest(w, c, payee, share);
+        bytes32 eth = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(k, eth);
+        return abi.encodePacked(r, s, v);
     }
 
     /// @dev Reproduce the contract's sorted-pair parent hash for building proofs.
@@ -168,14 +193,22 @@ contract CWEPayoutsTest is Test {
     /// @notice A payee that re-enters `withdraw` is blocked by the guard, causing
     ///         the whole withdrawal to revert (no funds move, nothing is marked).
     function test_withdraw_reentrancy_blocked() public {
-        // Register WORK_B with a single payee that attacks on receive.
-        ReentrantPayee attacker = new ReentrantPayee(payouts);
+        // Register WORK_B with a single payee that attacks on receive. A
+        // contract address has no private key, so no signature can ever
+        // ecrecover to it; place the attacker's bytecode (via vm.etch) at an
+        // address whose key we do know, so a genuine consent signature
+        // validates while the reentrancy trigger still fires on that address.
+        (address attackerAddr, uint256 attackerKey) = makeAddrAndKey("attacker");
+        vm.etch(attackerAddr, address(new ReentrantPayee(payouts)).code);
+        ReentrantPayee attacker = ReentrantPayee(payable(attackerAddr));
         address payable[] memory payees = new address payable[](1);
-        payees[0] = payable(address(attacker));
+        payees[0] = payable(attackerAddr);
         uint96[] memory splits = new uint96[](1);
         splits[0] = 1_000_000;
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _consent(attackerKey, WORK_B, CONTENT_B, attackerAddr, splits[0]);
         vm.prank(creator);
-        registry.registerWork(WORK_B, payees, splits, 1000, bytes32("EU"));
+        registry.registerWork(WORK_B, CONTENT_B, payees, splits, sigs, 1000, bytes32("EU"));
 
         uint256 amountB = 1 ether;
         bytes32 leafB = payouts.leafHash(WORK_B, amountB);

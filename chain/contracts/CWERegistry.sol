@@ -22,6 +22,8 @@ contract CWERegistry is ICWERegistry, Ownable {
         bytes32 regionRule; // opaque regional-pricing tag
         address registrant; // who first registered the work (only they may update)
         bool exists; // distinguishes a registered work from a zero-value slot
+        bytes32 contentId; // identifier of the underlying content (provenance)
+        uint256 registeredAt; // block timestamp of first registration (priority)
     }
 
     /// @dev workId => stored record.
@@ -49,6 +51,8 @@ contract CWERegistry is ICWERegistry, Ownable {
     error SplitsNotFull(uint256 sum);
     /// @dev Reverts when someone other than the original registrant updates a work.
     error NotRegistrant();
+    /// @dev Reverts when a payee's consent signature does not recover to that payee.
+    error BadConsent();
 
     /// @param initialOwner The address allowed to manage the creator allowlist.
     constructor(address initialOwner) Ownable(initialOwner) {}
@@ -64,11 +68,15 @@ contract CWERegistry is ICWERegistry, Ownable {
     /// @inheritdoc ICWERegistry
     /// @dev Registration and update share this entry point. A first call records
     ///      the caller as the registrant; later calls must come from that same
-    ///      registrant. All calls must pass split validation.
+    ///      registrant. All calls must pass split validation and, per payee,
+    ///      consent verification (each payee must have signed off on their exact
+    ///      share of this exact work/content pairing).
     function registerWork(
         bytes32 workId,
+        bytes32 contentId,
         address payable[] calldata payees,
         uint96[] calldata splits,
+        bytes[] calldata consentSigs,
         uint256 pricePerMin,
         bytes32 regionRule
     ) external {
@@ -76,6 +84,14 @@ contract CWERegistry is ICWERegistry, Ownable {
         if (!isVerifiedCreator[msg.sender]) revert NotVerifiedCreator();
         // Validate the payee/split arrays before touching storage.
         _validateSplits(payees, splits);
+
+        // Verify every payee consented to their exact share (provenance).
+        for (uint256 i = 0; i < payees.length; i++) {
+            bytes32 digest = consentDigest(workId, contentId, payees[i], splits[i]);
+            // EIP-191 personal-sign prefix, then recover.
+            bytes32 eth = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest));
+            if (_recover(eth, consentSigs[i]) != payees[i]) revert BadConsent();
+        }
 
         Work storage work = _works[workId];
         bool isNew = !work.exists;
@@ -93,6 +109,8 @@ contract CWERegistry is ICWERegistry, Ownable {
         work.splits = splits;
         work.pricePerMin = pricePerMin;
         work.regionRule = regionRule;
+        work.contentId = contentId;
+        work.registeredAt = block.timestamp;
 
         // Emit the event that matches whether this created or updated the work.
         if (isNew) {
@@ -100,6 +118,17 @@ contract CWERegistry is ICWERegistry, Ownable {
         } else {
             emit WorkUpdated(workId, msg.sender);
         }
+    }
+
+    /// @inheritdoc ICWERegistry
+    function consentDigest(bytes32 workId, bytes32 contentId, address payee, uint96 share)
+        public
+        pure
+        returns (bytes32)
+    {
+        // Binds the work, its content, the payee, and their exact share so a
+        // consent cannot be replayed against a different work or split.
+        return keccak256(abi.encode(workId, contentId, payee, share));
     }
 
     /// @inheritdoc ICWERegistry
@@ -136,6 +165,33 @@ contract CWERegistry is ICWERegistry, Ownable {
     /// @return The regionRule bytes32 tag.
     function regionRuleOf(bytes32 workId) external view returns (bytes32) {
         return _works[workId].regionRule;
+    }
+
+    /// @inheritdoc ICWERegistry
+    function contentIdOf(bytes32 workId) external view returns (bytes32) {
+        return _works[workId].contentId;
+    }
+
+    /// @inheritdoc ICWERegistry
+    function registeredAtOf(bytes32 workId) external view returns (uint256) {
+        return _works[workId].registeredAt;
+    }
+
+    /// @dev Recover the signer of `hash` from a 65-byte (r, s, v) signature.
+    ///      Reverts with `BadConsent` on any signature that is not exactly 65
+    ///      bytes, rather than letting `ecrecover` silently misparse it.
+    function _recover(bytes32 hash, bytes calldata sig) private pure returns (address) {
+        if (sig.length != 65) revert BadConsent();
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        // Layout of a packed (r, s, v) signature: 32 bytes r, 32 bytes s, 1 byte v.
+        assembly {
+            r := calldataload(sig.offset)
+            s := calldataload(add(sig.offset, 32))
+            v := byte(0, calldataload(add(sig.offset, 64)))
+        }
+        return ecrecover(hash, v, r, s);
     }
 
     /// @dev Enforce the split rules: equal non-empty lengths, no zero payee, no

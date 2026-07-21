@@ -68,10 +68,30 @@ send $DEPLOYER $REG "setVerifiedCreator(address,bool)" $(cast wallet address $DE
 WORK_A=$(cast format-bytes32-string "workA")
 WORK_B=$(cast format-bytes32-string "workB")
 WORK_C=$(cast format-bytes32-string "workC")
-for pair in "$WORK_A:$PAYEE_A" "$WORK_B:$PAYEE_B" "$WORK_C:$PAYEE_C"; do
-  W=${pair%%:*}; P=${pair##*:}
-  send $DEPLOYER $REG "registerWork(bytes32,address[],uint96[],uint256,bytes32)" \
-    $W "[$P]" "[1000000]" $PPM $EU
+CONTENT_A=$(cast keccak "content-workA")
+CONTENT_B=$(cast keccak "content-workB")
+CONTENT_C=$(cast keccak "content-workC")
+# Build a payee's EIP-191 consent signature over the registry's consentDigest:
+# read the digest on-chain, then `cast wallet sign` (which applies the
+# "\x19Ethereum Signed Message:\n32" prefix and hashes) so the contract's
+# ecrecover recovers exactly the signing payee.
+consent() {
+  local work=$1 content=$2 payee=$3 share=$4 key=$5
+  local digest
+  digest=$(cast call --rpc-url $RPC $REG "consentDigest(bytes32,bytes32,address,uint96)(bytes32)" \
+    "$work" "$content" "$payee" "$share")
+  cast wallet sign --private-key "$key" "$digest"
+}
+SIG_A=$(consent $WORK_A $CONTENT_A $PAYEE_A $PPM ${KEYS[3]})
+SIG_B=$(consent $WORK_B $CONTENT_B $PAYEE_B $PPM ${KEYS[4]})
+SIG_C=$(consent $WORK_C $CONTENT_C $PAYEE_C $PPM ${KEYS[5]})
+WORKS=("$WORK_A" "$WORK_B" "$WORK_C")
+CONTENTS=("$CONTENT_A" "$CONTENT_B" "$CONTENT_C")
+PAYEES=("$PAYEE_A" "$PAYEE_B" "$PAYEE_C")
+SIGS=("$SIG_A" "$SIG_B" "$SIG_C")
+for i in 0 1 2; do
+  send $DEPLOYER $REG "registerWork(bytes32,bytes32,address[],uint96[],bytes[],uint256,bytes32)" \
+    "${WORKS[$i]}" "${CONTENTS[$i]}" "[${PAYEES[$i]}]" "[1000000]" "[${SIGS[$i]}]" $PPM $EU
 done
 
 # --- step 3: subscribe (funds the payout pool) -----------------------------
