@@ -1,5 +1,8 @@
 # Roadmap (High-Level)
 
+> **Detailed, status-annotated roadmap:** [`docs/roadmap.md`](docs/roadmap.md) —
+> forward phases, the stub-hardening track, dependencies, and next steps.
+
 ## Phase 1 — MVP (Music) ✅ complete
 - [x] Browser extension: local accounting + FP lookup stub
 - [x] Contracts: tiers, registry, consumption submit, payout ledger
@@ -9,10 +12,17 @@
 See `docs/plans/phase1_mvp_music_implementation_plan.md` and
 `docs/plans/phase1_demo.md`.
 
-## Phase 2 — Video & News
-- Player plugin hooks (VLC/FFmpeg)
-- Discovery Hub MVP + OpenAPI
-- Arbitration jury flow (stub)
+## Phase 2 — Video & News *(1 of 3 done)*
+- [x] Discovery Hub MVP + OpenAPI (`make -C ops hub-demo`) — see
+  `docs/superpowers/specs/2026-07-21-discovery-hub-mvp-design.md`
+- [ ] Player plugin hooks (VLC/FFmpeg)
+- [ ] Arbitration jury flow (stub)
+
+## Hardening track (graduate the MVP stubs)
+Runs alongside the feature phases: perceptual fingerprinting, ZK usage proofs, the
+full DAPR model + anti-fraud, decentralised settlement, a storage layer, SSI/VC
+identity, tier capability tokens, an epoch beacon, discovery v2, and security/legal
+hardening. Details and spec mapping in [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Phase 3 — DMF
 - Creator shop template (split‑pay, escrow)
