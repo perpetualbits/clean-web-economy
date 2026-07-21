@@ -35,9 +35,19 @@ On `POST /manifests` the hub (`src/chain.rs`, `validate_ingest`):
 
 Only then is the manifest indexed (and a duplicate-fingerprint claim by a
 different work is rejected with `409`). This means the hub trusts the chain,
-not the network: nobody can publish, misprice, or re-region a work they don't
-control, and no off-chain party (including the hub operator) can forge a
-manifest on a creator's behalf.
+not the network: for the fields the registry knows — `work_id`, `price_per_min`,
+`region`, and the registrant/`creator_id` — nobody can publish, misprice, or
+re-region a work they don't control, and no off-chain party (including the hub
+operator) can forge a manifest on a creator's behalf.
+
+**Scope of the guarantee.** The `fingerprint`→work binding is **not**
+chain-anchored — the registry has no fingerprint concept. A creator asserts their
+work's fingerprint in the manifest, and the hub protects it only on a
+first-writer-wins basis (the `409` duplicate guard): whoever registers a given
+fingerprint first holds it. Robust duplicate detection and anti-theft (perceptual
+similarity, delisting, reputation) are deferred to a later cycle, so this MVP does
+not prevent a verified creator from claiming an as-yet-unclaimed fingerprint of
+content they did not produce.
 
 ## Running the server
 

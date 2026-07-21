@@ -35,7 +35,12 @@ cargo build --quiet -p cwe-discovery-hub --manifest-path "$ROOT/Cargo.toml"
 # --- start Anvil (stop only the processes we start) -------------------------
 anvil > "$WORK/anvil.log" 2>&1 & ANVIL=$!
 trap 'kill -TERM "$ANVIL" "${HUBPID:-}" 2>/dev/null || true; rm -rf "$WORK"' EXIT
-for _ in $(seq 1 80); do cast block-number --rpc-url $RPC >/dev/null 2>&1 && break; done
+# Wait for Anvil to accept RPC. The 0.25s delay bounds the wait by wall-clock time
+# (a failed `cast` returns in milliseconds, so without it 80 tries can burn out in a
+# blink); fail loudly if it never comes up rather than racing into a deploy.
+anvil_ready=0
+for _ in $(seq 1 80); do cast block-number --rpc-url $RPC >/dev/null 2>&1 && { anvil_ready=1; break; }; sleep 0.25; done
+[ "$anvil_ready" = "1" ] || { echo "FAIL: Anvil never became ready"; exit 1; }
 
 # Anvil's deterministic dev keys/addresses.
 mapfile -t KEYS < <(grep -oE '0x[0-9a-f]{64}' "$WORK/anvil.log" | head -3)
@@ -57,7 +62,11 @@ send $DEPLOYER $REG "registerWork(bytes32,address[],uint96[],uint256,bytes32)" \
 
 # --- start the hub, pointed at the freshly deployed registry ----------------
 REGISTRY=$REG RPC_URL=$RPC BIND=$HUB_BIND SNAPSHOT="$WORK/index.json" "$ROOT/target/debug/cwe-hub" & HUBPID=$!
-for _ in $(seq 1 40); do curl -sf $HUB/healthz >/dev/null 2>&1 && break; done
+# Wait for the hub's health endpoint, with a bounded, delayed retry and an explicit
+# failure so a hub that never starts is a clear error, not a confusing later POST.
+hub_ready=0
+for _ in $(seq 1 40); do curl -sf $HUB/healthz >/dev/null 2>&1 && { hub_ready=1; break; }; sleep 0.25; done
+[ "$hub_ready" = "1" ] || { echo "FAIL: hub never became ready"; exit 1; }
 
 FP="fp:$(printf 'a%.0s' {1..64})"
 manifest() { cat <<JSON

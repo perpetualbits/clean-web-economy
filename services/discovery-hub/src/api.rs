@@ -87,6 +87,15 @@ fn err(status: StatusCode, message: &str) -> (StatusCode, Json<serde_json::Value
     (status, Json(serde_json::json!({ "error": message })))
 }
 
+/// The current Unix time in whole seconds. Used to clamp client-supplied
+/// timestamps and to compute recency for trending.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// `POST /manifests` — validate a signed manifest against the chain, then index it.
 async fn ingest<R: RegistryView + Send + Sync>(
     State(state): State<GenericState<R>>,
@@ -99,10 +108,14 @@ async fn ingest<R: RegistryView + Send + Sync>(
     crate::chain::validate_ingest(&body.manifest, &sig, state.registry.as_ref())
         .await
         .map_err(|e| err(StatusCode::BAD_REQUEST, &e.to_string()))?;
-    let work_id = body.manifest.work_id;
+    // Clamp the client-supplied timestamp to the server's clock: `created_at`
+    // orders /trending, so an unclamped future value could pin a work to the top.
+    let mut manifest = body.manifest;
+    manifest.created_at = manifest.created_at.min(now_secs());
+    let work_id = manifest.work_id;
     {
         let mut idx = state.index.write().await;
-        idx.upsert(body.manifest)
+        idx.upsert(manifest)
             .map_err(|e| err(StatusCode::CONFLICT, &e.to_string()))?;
         idx.save_snapshot(&state.snapshot)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
@@ -167,12 +180,8 @@ async fn trending<R: RegistryView + Send + Sync>(
     State(state): State<GenericState<R>>,
     Query(params): Query<TrendingQuery>,
 ) -> Json<serde_json::Value> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
     let idx = state.index.read().await;
-    let results = idx.trending(params.work_type, now, PAGE_SIZE);
+    let results = idx.trending(params.work_type, now_secs(), PAGE_SIZE);
     Json(serde_json::json!({ "results": results }))
 }
 
@@ -460,6 +469,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// A far-future client `created_at` is clamped to the server clock at ingest,
+    /// so it cannot be abused to pin a work to the top of /trending.
+    #[tokio::test]
+    async fn ingest_clamps_future_created_at() {
+        let signer = PrivateKeySigner::random();
+        let state = test_state(FakeReg(signer.address()));
+        let app = router_generic(state.clone());
+
+        let m = WorkManifest {
+            work_id: Bytes32([9; 32]),
+            fingerprint: "fp:clamp".to_string(),
+            title: "Future".to_string(),
+            description: String::new(),
+            tags: vec![],
+            work_type: WorkType::Audio,
+            price_per_min: 1_000_000,
+            region: Bytes32([0; 32]),
+            creator_id: signer.address(),
+            created_at: u64::MAX, // absurd future timestamp
+        };
+        // Capture the work id (Copy) before `m` is moved into the request body.
+        let work_id = m.work_id;
+        let sig = format!(
+            "0x{}",
+            hex::encode(
+                signer
+                    .sign_message_sync(&m.canonical_bytes().unwrap())
+                    .unwrap()
+                    .as_bytes()
+            )
+        );
+        let body = serde_json::json!({ "manifest": m, "signature": sig }).to_string();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/manifests")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // Fetch the stored manifest; its created_at must have been clamped.
+        let resp = app
+            .oneshot(
+                Request::get(format!("/manifest/{work_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let created = stored["created_at"].as_u64().unwrap();
+        let now = now_secs();
+        assert!(
+            created <= now,
+            "created_at {created} should be clamped to <= {now}"
+        );
+        assert_ne!(created, u64::MAX);
     }
 
     /// Resolving an unknown fingerprint returns 404.

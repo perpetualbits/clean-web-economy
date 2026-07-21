@@ -103,13 +103,15 @@ hub surfaces only the tag; it does not compute or return a region factor.
 
 To make a manifest signable and verifiable identically on both sides, the
 canonical byte string is the manifest serialized as **JSON with lexicographically
-sorted keys and no insignificant whitespace** (UTF-8). The **digest** is
-`keccak256(canonical_bytes)`.
+sorted keys and no insignificant whitespace** (UTF-8) — RFC 8785 (JCS).
 
-The signature is an **EIP-191 personal-sign** over that digest
-(`"\x19Ethereum Signed Message:\n32" ‖ digest`), producing a 65-byte
-`r ‖ s ‖ v`. The hub recovers the signer address with `ecrecover` (alloy) and
-compares it to the on-chain registrant.
+The signature is an **EIP-191 personal-sign over the canonical bytes directly**:
+the signer applies the `"\x19Ethereum Signed Message:\n<len>" ‖ canonical_bytes`
+prefix and signs (alloy's `sign_message`), producing a 65-byte `r ‖ s ‖ v`. The
+hub recovers the signer address from the same canonical bytes (alloy's
+`recover_address_from_msg`) and compares it to the on-chain registrant. (There is
+no separate `keccak256(canonical_bytes)` pre-hash step — EIP-191 personal-sign
+already hashes the prefixed message.)
 
 Because the signer CLI and the hub both call the **same** `manifest` module for
 canonicalization and hashing, the encodings cannot drift.

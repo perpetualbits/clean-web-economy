@@ -8,10 +8,12 @@ repository.workspace = true
 description = "Privacy-preserving discovery hub for the Clean Web Economy"
 
 [dependencies]
-cwe-fingerprint = { path = "../../libs/fingerprint" }
 cwe-wallet-zk = { path = "../../libs/wallet-zk" }
 alloy = { version = "2", features = ["full"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+# `sync` is declared explicitly because the API holds the index behind a
+# tokio::sync::RwLock; without it the crate would compile only via dependency
+# feature unification and could break on a dependency change.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
 axum = "0.8"
 utoipa = "5"
 serde.workspace = true

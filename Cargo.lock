@@ -1622,7 +1622,6 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "axum",
- "cwe-fingerprint",
  "cwe-wallet-zk",
  "hex",
  "serde",
