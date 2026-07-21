@@ -76,7 +76,8 @@ status. The full machine-readable contract is served at `GET /openapi.json`.
 | Method | Path                     | Description                                                         |
 |--------|--------------------------|----------------------------------------------------------------------|
 | POST   | `/manifests`             | Ingest a signed manifest (`{ manifest, signature }`). `201` on success, `400` on a bad signature/chain mismatch, `409` if the fingerprint is already claimed by another work. |
-| GET    | `/resolve/{fingerprint}` | Resolve a `fp:<hex>` fingerprint to the work's payout-relevant fields (the browser extension's seam into the hub). `404` if unknown. |
+| GET    | `/resolve/content/{content_id}` | **Tier 1 (authoritative):** resolve an exact `keccak256(content)` id to its work. A hit is a signed match — provable ownership → direct payout. `404` if no signed match. |
+| GET    | `/resolve/fingerprint/{fp}` | **Tier 2 (fallback):** nearest perceptual-fingerprint match for a `fp:<hex>` id, returned as `{ candidate, similarity }`. Used only when content is unsigned; its earnings are escrow-bound. `404` if nothing is near enough. |
 | GET    | `/search?q=&type=&page=` | Ranked text search over title/tags/description, optionally filtered by `type` (`audio`/`video`/`text`), paginated (fixed page size). |
 | GET    | `/trending?type=`        | Recency-ranked list of works, optionally filtered by `type`.         |
 | GET    | `/manifest/{work_id}`    | The full manifest for an on-chain work id. `404` if unknown.         |
@@ -95,7 +96,8 @@ echo '{
   "work_id": "0x...", "fingerprint": "fp:...", "title": "Blue Ocean",
   "description": "demo", "tags": ["calm"], "work_type": "audio",
   "price_per_min": 1000000, "region": "0x...", "creator_id": "0x...",
-  "created_at": 1
+  "created_at": 1, "content_id": "0x...",
+  "payees": [["0xBand...", 700000], ["0xMusician...", 200000], ["0xDesigner...", 100000]]
 }' | PRIVATE_KEY=0x... cargo run -p cwe-discovery-hub --bin sign-manifest \
   > envelope.json
 
@@ -106,7 +108,46 @@ curl -X POST http://127.0.0.1:8080/manifests \
 `price_per_min`, `region`, and `creator_id` must match what is registered for
 `work_id` on-chain, and `PRIVATE_KEY` must belong to that work's registrant —
 otherwise ingest correctly rejects the manifest (see
-[Ingest trust model](#ingest-trust-model) above).
+[Ingest trust model](#ingest-trust-model) above). `content_id` is the exact
+`keccak256(content)` hash the Tier 1 resolver keys on, and `payees` mirrors the
+work's on-chain payee/share table (ppm shares summing to `1_000_000`) so a
+resolver can show who is paid without a second chain round-trip.
+
+## Recognition tiers, consent, and escrow
+
+A listener's client turns "I heard this" into "who to pay" through two tiers,
+and the hub answers each with a different endpoint:
+
+- **Tier 1 — signed content (authoritative).** The client hashes the exact
+  content bytes to a `content_id` and asks `GET /resolve/content/{content_id}`.
+  A hit is provable: only the work's registrant could have registered that
+  content id, and every payee cryptographically consented to their share (see
+  below). Tier 1 usage pays the payees **directly**.
+- **Tier 2 — perceptual fingerprint (fallback).** When content is unsigned (no
+  matching `content_id`), the client falls back to `GET
+  /resolve/fingerprint/{fp}`, a nearest-neighbour match on the acoustic
+  fingerprint. A fingerprint match is a *guess*, not proof of ownership, so its
+  earnings are **not paid out** — they are held in escrow (see below) so a
+  wrong or fraudulent attribution can be corrected before any money moves.
+
+**Consent / provenance.** A work's payees are not asserted by the registrant
+alone: on `registerWork`, every payee must submit an EIP-191 signature over a
+`consentDigest(workId, contentId, payee, share)`, and the registry's `ecrecover`
+must recover exactly that payee. A multi-collaborator work — say a band member
+(70%), a session musician (20%), and the cover designer (10%) — therefore
+registers only if **each** collaborator signed their exact share. That signed
+table is the provenance record the direct payout splits by.
+
+**Escrow + challenge (anti-fraud).** Tier 2 credit is committed to `CWEEscrow`
+behind a one-epoch challenge window instead of being paid. During the window,
+anyone holding a competing work **for the same content id** may `challenge` the
+escrow; the `EarliestRegistrationArbiter` awards it to whichever work was
+registered first. So if a fraudster registers a copy and a fingerprint match
+escrows earnings to them, the real owner — registered earlier for the same
+content — challenges and the escrow reassigns to them. Only after the window
+closes does `release` pay the (possibly reassigned) work's payees. This is why
+CWE never pays a fingerprint match outright: the escrow is the seam that keeps a
+wrong attribution from becoming a wrong payment.
 
 ## End-to-end demo
 
@@ -121,3 +162,11 @@ make -C ops hub-demo
 
 It prints `✅ HUB DEMO PASSED` on success and exits non-zero on any failure.
 It is also run in CI as the `hub-e2e` job (see `.github/workflows/ci.yml`).
+
+The companion `ops/demo/run_ownership_demo.sh` (`make -C ops ownership-demo`,
+CI job `ownership-e2e`) proves the on-chain half this hub feeds: it registers a
+multi-collaborator work whose three payees each consent to their share and pays
+them a **direct** split; then it plays an unsigned copy, escrows the
+fingerprint-matched credit, has the earlier-registered real owner **challenge**
+it away from a fraudster, and **releases** it to the real owner after the
+window. It prints `✅ OWNERSHIP DEMO PASSED` on success.

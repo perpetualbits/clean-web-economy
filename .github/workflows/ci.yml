@@ -166,3 +166,29 @@ jobs:
 
       - name: Run the demo
         run: make -C ops hub-demo
+
+  # ---------------------------------------------------------------------------
+  # Ownership & escrow end-to-end demo: register a multi-collaborator work whose
+  # payees each consent to their share -> direct split payout; then a
+  # fingerprint-matched unsigned copy -> escrow -> challenge by the earlier real
+  # owner -> release. Run headlessly on Anvil, same pattern as `e2e` above.
+  # ---------------------------------------------------------------------------
+  ownership-e2e:
+    name: Ownership & escrow end-to-end demo (Anvil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # `jq` parses the settlement's proof output inside the demo script.
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run the demo
+        run: make -C ops ownership-demo
