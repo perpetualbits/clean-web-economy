@@ -77,7 +77,7 @@ for _ in $(seq 1 40); do curl -sf $HUB/healthz >/dev/null 2>&1 && { hub_ready=1;
 
 FP="fp:$(printf 'a%.0s' {1..64})"
 manifest() { cat <<JSON
-{"work_id":"$WORK_ID","fingerprint":"$FP","title":"Blue Ocean","description":"demo","tags":["calm"],"work_type":"audio","price_per_min":1000000,"region":"$EU","creator_id":"$1","created_at":1}
+{"work_id":"$WORK_ID","fingerprint":"$FP","title":"Blue Ocean","description":"demo","tags":["calm"],"work_type":"audio","price_per_min":1000000,"region":"$EU","creator_id":"$1","created_at":1,"content_id":"$CONTENT_ID","payees":[["$PAYEE",1000000]]}
 JSON
 }
 
