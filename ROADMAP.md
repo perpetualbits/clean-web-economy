@@ -19,10 +19,17 @@ See `docs/plans/phase1_mvp_music_implementation_plan.md` and
 - [ ] Arbitration jury flow (stub)
 
 ## Hardening track (graduate the MVP stubs)
-Runs alongside the feature phases: perceptual fingerprinting, ZK usage proofs, the
-full DAPR model + anti-fraud, decentralised settlement, a storage layer, SSI/VC
-identity, tier capability tokens, an epoch beacon, discovery v2, and security/legal
-hardening. Details and spec mapping in [`docs/roadmap.md`](docs/roadmap.md).
+Runs alongside the feature phases.
+- [x] **H1 — Recognition & Ownership** ✅ — real Haitsma-Kalker perceptual
+  fingerprint, signing-first two-tier recognition (signed content vs. fingerprint
+  fallback), multi-party consent provenance, and a `CWEEscrow` + arbiter anti-fraud
+  spine (`make -C ops ownership-demo`) — see
+  `docs/superpowers/specs/2026-07-21-recognition-and-ownership-design.md`
+
+Still to come: ZK usage proofs, the full DAPR model + anti-fraud, decentralised
+settlement, a storage layer, SSI/VC identity, tier capability tokens, an epoch
+beacon, discovery v2, and security/legal hardening. Details and spec mapping in
+[`docs/roadmap.md`](docs/roadmap.md).
 
 ## Phase 3 — DMF
 - Creator shop template (split‑pay, escrow)

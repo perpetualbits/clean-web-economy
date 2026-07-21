@@ -11,19 +11,19 @@ detailed, status-annotated plan.
 
 ## 1. Where we are
 
-Two milestones are complete and merged to `main`, each with a one-command
+Three milestones are complete and merged to `main`, each with a one-command
 end-to-end demo on a local Anvil devnet.
 
 | Area | Built | Status |
 |---|---|---|
-| **Contracts** (`chain/`) | `CWETiers`, `CWERegistry`, `CWEConsumption`, `CWEPayouts`, `IProofVerifier`/`AcceptAllVerifier` | ✅ Phase 1 |
+| **Contracts** (`chain/`) | `CWETiers`, `CWEConsumption`, `CWEPayouts`, `IProofVerifier`/`AcceptAllVerifier`; `CWERegistry` (+ `content_id`, multi-party consent, registration timestamp); `CWEEscrow` + `EarliestRegistrationArbiter`/`IArbiter` | ✅ Phase 1 · H1 |
 | **Payout math** (`sims/`) | `cwe-dapr` — weighted split, ppm integer math, fixtures | ✅ Phase 1 |
-| **Fingerprint** (`libs/fingerprint`) | deterministic SHA-256 stub, `fp:` format | ✅ stub |
+| **Fingerprint** (`libs/fingerprint`) | Haitsma-Kalker perceptual fingerprint (gain-invariant, Hamming compare), `fp:<hex>` format | ✅ H1 |
 | **Client core** (`libs/wallet-zk`) | keccak commitments, `none-v0` ZK seam, epoch session store | ✅ Phase 1 |
-| **Settlement** (`services/settlement`) | reads events, opens commitments, runs DAPR, commits Merkle root, writes proofs | ✅ Phase 1 |
-| **Browser extension** (`clients/browser-ext`) | Rust→WASM core + MV3 shell; local accounting, price cap, settle flow | ✅ Phase 1 |
-| **Discovery Hub** (`services/discovery-hub`) | signed, chain-anchored manifest ingest; resolve/search/trending; OpenAPI | ✅ Phase 2·1 |
-| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, CI (rust/contracts/extension/e2e/hub-e2e) | ✅ |
+| **Settlement** (`services/settlement`) | reads events, opens commitments, runs DAPR, commits Merkle root; routes signed → direct payout, fingerprint → escrow | ✅ Phase 1 · H1 |
+| **Browser extension** (`clients/browser-ext`) | Rust→WASM core + MV3 shell; local accounting, price cap, settle flow; two-tier recognition (signed content + fingerprint fallback) | ✅ Phase 1 · H1 |
+| **Discovery Hub** (`services/discovery-hub`) | signed, chain-anchored manifest ingest; content-id (Tier 1) + fingerprint nearest-match (Tier 2) resolve; search/trending; OpenAPI | ✅ Phase 2·1 · H1 |
+| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e) | ✅ |
 
 ### What is real vs. stubbed
 
@@ -33,7 +33,7 @@ seam designed for drop-in replacement:
 | Concern | MVP today | Target spec |
 |---|---|---|
 | Usage proofs | keccak hash commitments + disclosure file; accept-all verifier | `zk_usage_proof_requirements.md` |
-| Fingerprinting | SHA-256 of sample/URL bytes (not perceptual) | `fingerprinting_specification.md` |
+| Fingerprinting | Haitsma-Kalker perceptual (gain-invariant); production robustness (re-encode, landmark/chromaprint) still to come | `fingerprinting_specification.md` |
 | Payout weighting | `minutes·price·region`, largest-remainder split | `DAPR_usage_aggregation_protocol.md` (bandwidth, diminishing returns, diversity) |
 | Settlement trust | single trusted aggregator commits a Merkle root | `rollup_aggregation_and_settlement_Interface_specification.md` |
 | Storage | none | `client-storage_handshake_specification.md`, `storage_node_policy_and_compliance_specification.md` |
@@ -41,7 +41,8 @@ seam designed for drop-in replacement:
 | Tiers | tier tied to wallet address | `tier_capability_token_format.md` |
 | Epoch | fixed 30-day window | `epoch_beacon_specification.md` |
 | Discovery | resolution + basic search | federation, differential privacy, DAPR-fed ranking, reputation |
-| Anti-fraud | none | `anti-fraud_and_bandwidth_receipt_protocol.md` |
+| Anti-fraud | fingerprint earnings escrow + challenge window + earliest-registration arbiter (jury seam); tier split still disclosure-asserted | `anti-fraud_and_bandwidth_receipt_protocol.md` |
+| Provenance | multi-party consent (each payee EIP-191-signs their share); content-id ownership | signed-exact beats fingerprint; arbitration jury for the residual case |
 
 ---
 
@@ -91,10 +92,17 @@ parameters the hardening track exposes (α/β ranking weights, tier fees, thresh
 Scheduled by risk and by feature need, runnable largely in parallel with the feature
 track:
 
-- **H1 — Perceptual fingerprinting** (`fingerprinting_specification.md`): replace the
-  SHA-256 stub with an audio landmark/chromaprint pipeline behind the existing
-  `Fingerprint::compute`/`compare` API. *High value* — it is what makes recognition
-  and duplicate detection real. Prereq for meaningful discovery dedup.
+- ✅ **H1 — Recognition & Ownership** (`fingerprinting_specification.md`): shipped a
+  real Haitsma-Kalker perceptual fingerprint behind the existing
+  `Fingerprint::compute`/`compare` API, and — reframed from a pure fingerprint swap
+  to a *signing-first* recognition model — added: two-tier recognition (signed
+  `content_id` is authoritative and pays directly; a fingerprint match is a cautious
+  fallback whose credit is escrowed), multi-party consent provenance in `CWERegistry`
+  (each payee EIP-191-signs their exact share), and a `CWEEscrow` + earliest-
+  registration `IArbiter` anti-fraud spine (commit → challenge → release), all proven
+  by `make ownership-demo`. *Remaining for H3:* production fingerprint robustness
+  (re-encode/landmark) and proving the signed-vs-fingerprint tier split rather than
+  trusting the disclosure.
 - **H2 — ZK usage proofs** (`zk_usage_proof_requirements.md`, `docs/issues/003`):
   real circuits behind the `ZK`/`IProofVerifier` seam, replacing the disclosure file.
   Removes the aggregator's view of raw usage.
@@ -126,10 +134,11 @@ track:
 flowchart LR
   P1[Phase 1 ✅] --> P21[2.1 Discovery ✅]
   P1 --> P22[2.2 Player plugin]
-  P1 --> H1[H1 Perceptual FP]
+  P1 --> H1[H1 Recognition & Ownership ✅]
   P21 --> H9[H9 Discovery v2]
   H1 --> H9
   H1 --> H3[H3 Full DAPR + anti-fraud]
+  H1 --> P23[2.3 Arbitration]
   H3 --> H9
   H6[H6 SSI identity] --> P3[Phase 3 DMF]
   P22 --> P3
@@ -138,24 +147,26 @@ flowchart LR
   P3 --> P4
 ```
 
-Critical enablers: **H1 (perceptual fingerprinting)** unlocks most of discovery and
-anti-fraud value; **H6 (identity)** gates Phase 3; **H2/H4 (ZK + decentralised
-settlement)** are the trust-minimisation backbone but can trail the feature work.
+Critical enablers: **H1 (recognition & ownership)** ✅ landed the recognition,
+provenance, and escrow foundation most of discovery and anti-fraud build on;
+**H6 (identity)** gates Phase 3; **H2/H4 (ZK + decentralised settlement)** are the
+trust-minimisation backbone but can trail the feature work.
 
 ---
 
 ## 5. Recommended near-term next steps
 
-Ranked by value-per-effort given what exists:
+Ranked by value-per-effort given what exists (H1 — recognition & ownership — is now
+✅ done, so the recognition/provenance/escrow foundation is in place):
 
-1. **H1 — Perceptual fingerprinting.** The single highest-leverage item: the whole
-   system's premise (recognise a work, credit the creator) is only as real as the
-   fingerprint. It slots behind an API that already exists and immediately makes the
-   Discovery Hub's duplicate detection and the client's recognition meaningful.
-2. **Phase 2.2 — Player plugin.** Extends paid consumption to desktop video/audio,
+1. **Phase 2.2 — Player plugin.** Extends paid consumption to desktop video/audio,
    broadening the demo from "browser only" to real media players, and reuses the
-   entire Rust core.
-3. **Phase 2.3 — Arbitration stub**, then **Phase 3 (DMF)** once **H6 (identity)** is
-   in place.
+   entire Rust core (including the new fingerprint).
+2. **Phase 2.3 — Arbitration jury flow.** Promotes the `IArbiter` seam H1 introduced
+   from the earliest-registration stub to a real dispute/juror/voting process —
+   directly hardening the escrow challenge path.
+3. **H3 — Full DAPR + anti-fraud.** Builds on H1's escrow spine: bandwidth
+   credibility, diminishing returns, diversity weighting, Sybil resistance. Then
+   **Phase 3 (DMF)** once **H6 (identity)** is in place.
 
 Each becomes its own spec → plan → build cycle. This document is updated as items land.
