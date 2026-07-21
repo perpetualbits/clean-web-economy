@@ -21,14 +21,23 @@ use cwe_wallet_zk::session::SessionStore;
 use cwe_wallet_zk::Bytes32;
 use wasm_bindgen::prelude::*;
 
-/// Compute the fingerprint of a buffer of audio sample bytes.
+/// Compute the perceptual fingerprint of decoded mono audio samples.
 ///
-/// Returns the canonical `fp:<64 hex>` identifier. In Phase 1 this is the
-/// deterministic SHA-256 stub (WP3); the API is stable across the swap to a real
-/// perceptual fingerprint later.
+/// `samples` are `f32` PCM at `sample_rate` Hz (the content script taps these via
+/// WebAudio). Returns the canonical `fp:<hex>` acoustic fingerprint — the Tier 2
+/// fallback identifier used when content is not signed.
 #[wasm_bindgen]
-pub fn fingerprint(samples: &[u8]) -> String {
-    Fingerprint::compute(samples).to_string()
+pub fn fingerprint(samples: &[f32], sample_rate: u32) -> String {
+    Fingerprint::compute(samples, sample_rate).to_string()
+}
+
+/// Compute the content id of raw content bytes: `keccak256(content)` as `0x`-hex.
+///
+/// This is the Tier 1 identifier — an exact content hash the hub resolves
+/// authoritatively against a signed manifest's registered `content_id`.
+#[wasm_bindgen]
+pub fn content_hash(bytes: &[u8]) -> String {
+    Bytes32(cwe_wallet_zk::keccak256(bytes)).to_string()
 }
 
 /// Build the usage commitment for a work.

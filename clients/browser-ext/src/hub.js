@@ -49,21 +49,58 @@ export class NetworkedHubClient {
   }
 
   /**
-   * Resolve a fingerprint via the hub, then the fallback.
+   * Tier 1 (authoritative): resolve by content id — an exact `keccak256(content)`
+   * hash — against a signed manifest. A hit is provable ownership → direct payout.
+   * @param {string} contentId The `0x`-hex content id.
+   * @returns {Promise<?object>} Work metadata, or null if no signed match.
+   */
+  async resolveContent(contentId) {
+    try {
+      const resp = await this.fetchImpl(`${this.hubUrl}/resolve/content/${contentId}`);
+      if (resp.ok) return await resp.json();
+    } catch (_e) {
+      // Network failure: no signed match.
+    }
+    return null;
+  }
+
+  /**
+   * Tier 2 (fallback): nearest perceptual-fingerprint match. Falls back to the
+   * static manifest on a miss/error.
    * @param {string} fingerprint The `fp:<hex>` identifier.
-   * @returns {Promise<?object>} Work metadata or null.
+   * @returns {Promise<?object>} The candidate work metadata, or null.
    */
   async resolveFingerprint(fingerprint) {
     try {
-      // The fingerprint's `fp:<hex>` form is used verbatim in the path (matches the hub's route).
-      const resp = await this.fetchImpl(`${this.hubUrl}/resolve/${fingerprint}`);
+      const resp = await this.fetchImpl(`${this.hubUrl}/resolve/fingerprint/${fingerprint}`);
       if (resp.ok) {
-        // The hub returns {work_id, price_per_min, region, work_type}.
-        return await resp.json();
+        // The hub returns { candidate, similarity }; the candidate is the work.
+        const body = await resp.json();
+        return body.candidate || null;
       }
     } catch (_e) {
       // Network failure: fall through to the static fallback.
     }
     return this.fallback ? this.fallback.resolveFingerprint(fingerprint) : null;
+  }
+
+  /**
+   * Two-tier recognition: try the authoritative content hash first (signed → pays
+   * directly), then fall back to a fingerprint match (escrowed). The returned work
+   * carries a `tier` of `"signed"` or `"fingerprint"` so the caller knows whether
+   * the usage pays directly or is escrow-bound.
+   * @param {{contentId?: string, fingerprint?: string}} inputs
+   * @returns {Promise<?object>} Work metadata + `tier`, or null.
+   */
+  async recognize({ contentId, fingerprint }) {
+    if (contentId) {
+      const signed = await this.resolveContent(contentId);
+      if (signed) return { ...signed, tier: "signed" };
+    }
+    if (fingerprint) {
+      const matched = await this.resolveFingerprint(fingerprint);
+      if (matched) return { ...matched, tier: "fingerprint" };
+    }
+    return null;
   }
 }

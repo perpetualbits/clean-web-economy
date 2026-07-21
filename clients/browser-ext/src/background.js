@@ -10,7 +10,7 @@
 // The heavy logic lives in Rust (the WASM core) and in the shared libs; this file
 // is the JavaScript glue the browser requires.
 
-import init, { fingerprint, commitment, WasmSession } from "../pkg/cwe_ext_core.js";
+import init, { fingerprint, content_hash, commitment, WasmSession } from "../pkg/cwe_ext_core.js";
 import { JsonRpcProvider, Wallet, Contract } from "ethers";
 import { StaticHubClient, NetworkedHubClient } from "./hub.js";
 import { allows } from "./policy.js";
@@ -65,14 +65,36 @@ async function getConfig() {
   return cfg.config || {};
 }
 
-/** Handle a media element beginning to play: resolve, apply policy, start accrual. */
-async function handlePlay({ sessionId, src }) {
+/**
+ * Handle a media element beginning to play: recognize (two-tier), apply policy,
+ * and start accrual.
+ *
+ * The content script provides the media's raw bytes (for the Tier 1 content hash)
+ * and decoded audio samples (for the Tier 2 perceptual fingerprint). Tier 1 —
+ * a signed-content match — is authoritative and pays directly; Tier 2 — a
+ * fingerprint match on unsigned content — is escrow-bound.
+ */
+async function handlePlay({ sessionId, contentBytes, samples, sampleRate }) {
   await ensureReady();
-  // Fingerprint the source URL bytes (Phase 1 identification).
-  const fp = fingerprint(new TextEncoder().encode(src));
-  // Awaited so this works whether `hub` is the sync static client or the async
-  // networked client (which resolves live, falling back to the static manifest).
-  const work = await hub.resolveFingerprint(fp);
+
+  // Tier 1 input: the exact content id (keccak256 of the content bytes).
+  const contentId = contentBytes && contentBytes.length
+    ? content_hash(new Uint8Array(contentBytes))
+    : null;
+  // Tier 2 input: the perceptual fingerprint of the decoded audio.
+  const fp = samples && samples.length
+    ? fingerprint(new Float32Array(samples), sampleRate || 44100)
+    : null;
+
+  // Recognize: the networked hub tries signed content first, then fingerprint;
+  // the static fallback client only knows fingerprints.
+  let work;
+  if (typeof hub.recognize === "function") {
+    work = await hub.recognize({ contentId, fingerprint: fp });
+  } else if (fp) {
+    const w = await hub.resolveFingerprint(fp);
+    work = w ? { ...w, tier: "fingerprint" } : null;
+  }
   // Unknown work: nothing to account or charge for.
   if (!work) return { ok: true, resolved: false };
 
@@ -84,8 +106,21 @@ async function handlePlay({ sessionId, src }) {
 
   // Begin accruing time to this work.
   session.start(sessionId, work.work_id);
+  // A fingerprint (Tier 2) recognition is escrow-bound: remember the work so the
+  // settle flow marks it for escrow rather than a direct payout.
+  if (work.tier === "fingerprint") {
+    await recordEscrowWork(work.work_id);
+  }
   await persistSession();
-  return { ok: true, resolved: true, work_id: work.work_id };
+  return { ok: true, resolved: true, work_id: work.work_id, tier: work.tier };
+}
+
+/** Persist a fingerprint-recognized (escrow-bound) work id for the settle flow. */
+async function recordEscrowWork(workId) {
+  const { escrowWorks } = await chrome.storage.local.get("escrowWorks");
+  const set = new Set(escrowWorks || []);
+  set.add(workId);
+  await chrome.storage.local.set({ escrowWorks: [...set] });
 }
 
 /** Handle progress: add elapsed seconds to the session's work. */

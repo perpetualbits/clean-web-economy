@@ -34,13 +34,48 @@
     sessions.set(el, sessionId);
     lastTime.set(el, el.currentTime || 0);
 
-    // The background resolves the source to a work, applies policy, and starts accrual.
+    // Fetch the media bytes and decode audio so the background can compute both
+    // recognition inputs: the exact content hash (Tier 1) and the perceptual
+    // fingerprint (Tier 2). Served/same-origin content is readable; where it is
+    // not (CORS), we send neither and the work simply goes unrecognized.
     const src = el.currentSrc || el.src || "";
-    const resp = await notify({ type: "play", sessionId, src });
+    let contentBytes = null;
+    let samples = null;
+    let sampleRate = null;
+    try {
+      const buf = await (await fetch(src)).arrayBuffer();
+      contentBytes = Array.from(new Uint8Array(buf));
+      const audio = await decodeAudio(buf.slice(0));
+      if (audio) {
+        samples = Array.from(audio.data);
+        sampleRate = audio.sampleRate;
+      }
+    } catch (_e) {
+      // CORS or fetch failure: leave the inputs null (work stays unrecognized).
+    }
+
+    const resp = await notify({ type: "play", sessionId, contentBytes, samples, sampleRate });
     // If the work is over the user's cap, stop it and show why.
     if (resp && resp.block) {
       el.pause();
       showBlockOverlay(el, resp.reason || "Price cap exceeded");
+    } else if (resp && resp.tier === "fingerprint") {
+      // Recognized only by fingerprint (unsigned) — its earnings are escrowed.
+      showBlockOverlay(el, "Unsigned — earnings held in escrow");
+    }
+  }
+
+  /** Decode media bytes to mono f32 PCM + sample rate, or null on failure. */
+  async function decodeAudio(arrayBuffer) {
+    try {
+      const Ctx = self.AudioContext || self.webkitAudioContext;
+      const ctx = new Ctx();
+      const buffer = await ctx.decodeAudioData(arrayBuffer);
+      const data = buffer.getChannelData(0); // channel 0 (mono is enough for the fp)
+      await ctx.close();
+      return { data, sampleRate: buffer.sampleRate };
+    } catch (_e) {
+      return null;
     }
   }
 
