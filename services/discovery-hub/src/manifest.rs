@@ -124,7 +124,7 @@ mod tests {
         WorkManifest {
             work_id: Bytes32([0xAA; 32]),
             content_id: Bytes32([0xBB; 32]),
-            fingerprint: "fp:".to_string() + &"11".repeat(32),
+            fingerprint: "fp:".to_string() + &"11".repeat(128),
             title: "Test Track".to_string(),
             description: "a demo".to_string(),
             tags: vec!["demo".to_string(), "audio".to_string()],

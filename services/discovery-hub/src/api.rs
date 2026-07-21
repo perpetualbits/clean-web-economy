@@ -72,7 +72,8 @@ pub fn router(state: AppState) -> Router {
 fn router_generic<R: RegistryView + Send + Sync + 'static>(state: GenericState<R>) -> Router {
     Router::new()
         .route("/manifests", post(ingest::<R>))
-        .route("/resolve/{fingerprint}", get(resolve::<R>))
+        .route("/resolve/content/{content_id}", get(resolve_content::<R>))
+        .route("/resolve/fingerprint/{fp}", get(resolve_fingerprint::<R>))
         .route("/search", get(search::<R>))
         .route("/trending", get(trending::<R>))
         .route("/manifest/{work_id}", get(manifest_handler::<R>))
@@ -115,8 +116,13 @@ async fn ingest<R: RegistryView + Send + Sync>(
     let work_id = manifest.work_id;
     {
         let mut idx = state.index.write().await;
-        idx.upsert(manifest)
-            .map_err(|e| err(StatusCode::CONFLICT, &e.to_string()))?;
+        idx.upsert(manifest).map_err(|e| match e {
+            // A malformed fingerprint is a client error, not a registration conflict.
+            crate::index::IndexError::BadFingerprint(_) => {
+                err(StatusCode::BAD_REQUEST, &e.to_string())
+            }
+            _ => err(StatusCode::CONFLICT, &e.to_string()),
+        })?;
         idx.save_snapshot(&state.snapshot)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
     }
@@ -126,16 +132,54 @@ async fn ingest<R: RegistryView + Send + Sync>(
     ))
 }
 
-/// `GET /resolve/{fingerprint}` — the extension seam; resolves a fingerprint to
-/// the work's payout-relevant fields.
-async fn resolve<R: RegistryView + Send + Sync>(
+/// `GET /resolve/content/{content_id}` — Tier 1's authoritative, signed-exact
+/// resolution (design §3): an exact `content_id` match, no fuzzy matching.
+async fn resolve_content<R: RegistryView + Send + Sync>(
     State(state): State<GenericState<R>>,
-    Path(fingerprint): Path<String>,
+    Path(content_id): Path<String>,
 ) -> Result<Json<Resolved>, (StatusCode, Json<serde_json::Value>)> {
+    let content_id = Bytes32::from_str(&content_id)
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "bad content id"))?;
     let idx = state.index.read().await;
-    idx.resolve(&fingerprint)
+    idx.resolve_content(&content_id)
         .map(Json)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "fingerprint not found"))
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "content id not found"))
+}
+
+/// Conservative default similarity bar for the Tier 2 fingerprint fallback
+/// (design §6). Distinct audio scores ~0.51 in `cwe-fingerprint`'s own tests, so
+/// 0.85 leaves a wide safety margin against false matches — and a fingerprint
+/// hit never pays directly (it escrows, design §5), so the bar can stay strict.
+const FP_MATCH_THRESHOLD: f64 = 0.85;
+
+/// Query parameters accepted by `GET /resolve/fingerprint/{fp}`.
+#[derive(Debug, Deserialize)]
+struct ResolveFingerprintQuery {
+    threshold: Option<f64>,
+}
+
+/// `GET /resolve/fingerprint/{fp}?threshold=` — Tier 2's cautious fallback
+/// (design §3.2): the nearest registered fingerprint above `threshold` (or the
+/// conservative default), as a candidate plus its similarity score.
+async fn resolve_fingerprint<R: RegistryView + Send + Sync>(
+    State(state): State<GenericState<R>>,
+    Path(fp): Path<String>,
+    Query(params): Query<ResolveFingerprintQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let fp = cwe_fingerprint::Fingerprint::parse(&fp)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, &e.to_string()))?;
+    let threshold = params.threshold.unwrap_or(FP_MATCH_THRESHOLD);
+    let idx = state.index.read().await;
+    idx.nearest_fingerprint(&fp, threshold)
+        .map(|(candidate, similarity)| {
+            Json(serde_json::json!({ "candidate": candidate, "similarity": similarity }))
+        })
+        .ok_or_else(|| {
+            err(
+                StatusCode::NOT_FOUND,
+                "no fingerprint match above threshold",
+            )
+        })
 }
 
 /// Fixed page size for `/search` and `/trending` (design §5). The MVP does not
@@ -269,23 +313,44 @@ fn paths_json() -> serde_json::Value {
                     "201": { "description": "Manifest indexed", "content": { "application/json": {
                         "schema": { "type": "object", "properties": { "work_id": { "type": "string" } } }
                     } } },
-                    "400": { "description": "Invalid signature or failed chain validation" },
-                    "409": { "description": "Fingerprint already claimed by another work" }
+                    "400": { "description": "Invalid signature, failed chain validation, or malformed fingerprint" },
+                    "409": { "description": "Fingerprint or content id already claimed by another work" }
                 }
             }
         },
-        "/resolve/{fingerprint}": {
+        "/resolve/content/{content_id}": {
             "get": {
-                "summary": "Resolve a fingerprint to its payout-relevant fields",
-                "operationId": "resolveFingerprint",
+                "summary": "Tier 1: resolve a content id to its signed-exact owner",
+                "operationId": "resolveContent",
                 "parameters": [
-                    { "name": "fingerprint", "in": "path", "required": true, "schema": { "type": "string" } }
+                    { "name": "content_id", "in": "path", "required": true, "schema": { "type": "string" } }
                 ],
                 "responses": {
                     "200": { "description": "Resolved", "content": { "application/json": {
                         "schema": { "$ref": "#/components/schemas/Resolved" }
                     } } },
-                    "404": { "description": "Fingerprint not found" }
+                    "400": { "description": "Malformed content id" },
+                    "404": { "description": "Content id not found" }
+                }
+            }
+        },
+        "/resolve/fingerprint/{fp}": {
+            "get": {
+                "summary": "Tier 2: nearest registered fingerprint above a similarity threshold",
+                "operationId": "resolveFingerprint",
+                "parameters": [
+                    { "name": "fp", "in": "path", "required": true, "schema": { "type": "string" } },
+                    { "name": "threshold", "in": "query", "schema": { "type": "number" } }
+                ],
+                "responses": {
+                    "200": { "description": "Best-matching candidate and its similarity", "content": { "application/json": {
+                        "schema": { "type": "object", "properties": {
+                            "candidate": { "$ref": "#/components/schemas/Summary" },
+                            "similarity": { "type": "number" }
+                        } }
+                    } } },
+                    "400": { "description": "Malformed fingerprint" },
+                    "404": { "description": "No match above threshold" }
                 }
             }
         },
@@ -411,6 +476,11 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt; // for `oneshot`
 
+    /// A well-formed `fp:<256 hex>` fingerprint string, distinguished by `byte`.
+    fn fp_str(byte: u8) -> String {
+        format!("fp:{}", hex::encode([byte; 128]))
+    }
+
     struct FakeReg(Address);
     impl RegistryView for FakeReg {
         async fn lookup(&self, _w: Bytes32) -> Result<Option<OnChainWork>, String> {
@@ -422,7 +492,8 @@ mod tests {
         }
     }
 
-    /// Ingesting a valid manifest then resolving its fingerprint round-trips.
+    /// Ingesting a valid manifest then resolving its content id and fingerprint
+    /// round-trips through both Tier 1 (exact) and Tier 2 (nearest-match).
     #[tokio::test]
     async fn ingest_then_resolve() {
         let signer = PrivateKeySigner::random();
@@ -432,7 +503,7 @@ mod tests {
         let m = WorkManifest {
             work_id: Bytes32([1; 32]),
             content_id: Bytes32([1; 32]),
-            fingerprint: "fp:aa".to_string(),
+            fingerprint: fp_str(0xaa),
             title: "Song".to_string(),
             description: String::new(),
             tags: vec![],
@@ -443,6 +514,8 @@ mod tests {
             created_at: 1,
             payees: vec![(signer.address(), 1_000_000)],
         };
+        // Capture the content id (Copy) before `m` is moved into the request body.
+        let content_id = m.content_id;
         let sig = format!(
             "0x{}",
             hex::encode(
@@ -466,8 +539,25 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
 
+        // Tier 1: exact content-id resolution.
         let resp = app
-            .oneshot(Request::get("/resolve/fp:aa").body(Body::empty()).unwrap())
+            .clone()
+            .oneshot(
+                Request::get(format!("/resolve/content/{content_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Tier 2: the exact fingerprint is trivially its own nearest match.
+        let resp = app
+            .oneshot(
+                Request::get(format!("/resolve/fingerprint/{}", fp_str(0xaa)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -484,7 +574,7 @@ mod tests {
         let m = WorkManifest {
             work_id: Bytes32([9; 32]),
             content_id: Bytes32([9; 32]),
-            fingerprint: "fp:clamp".to_string(),
+            fingerprint: fp_str(0xc1),
             title: "Future".to_string(),
             description: String::new(),
             tags: vec![],
@@ -542,21 +632,56 @@ mod tests {
         assert_ne!(created, u64::MAX);
     }
 
-    /// Resolving an unknown fingerprint returns 404.
+    /// An unregistered content id, and a fingerprint with no near match, both
+    /// return 404; a malformed content id or fingerprint returns 400.
     #[tokio::test]
     async fn resolve_missing_is_not_found() {
         let signer = PrivateKeySigner::random();
         let state = test_state(FakeReg(signer.address()));
         let app = router_generic(state);
+
         let resp = app
+            .clone()
             .oneshot(
-                Request::get("/resolve/fp:missing")
+                Request::get(format!("/resolve/content/{}", Bytes32([0xff; 32])))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/resolve/content/not-an-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/resolve/fingerprint/{}", fp_str(0xee)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let resp = app
+            .oneshot(
+                Request::get("/resolve/fingerprint/not-a-fingerprint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     /// A manifest whose signature was not produced by the on-chain registrant is
@@ -571,7 +696,7 @@ mod tests {
         let m = WorkManifest {
             work_id: Bytes32([2; 32]),
             content_id: Bytes32([2; 32]),
-            fingerprint: "fp:bb".to_string(),
+            fingerprint: fp_str(0xbb),
             title: "Song".to_string(),
             description: String::new(),
             tags: vec![],
@@ -682,7 +807,12 @@ mod tests {
         let state = test_state(FakeReg(signer.address()));
         let app = router_generic(state);
 
-        let m = manifest([3; 32], "fp:search", "Nightjar Melodies", signer.address());
+        let m = manifest(
+            [3; 32],
+            &fp_str(0xd1),
+            "Nightjar Melodies",
+            signer.address(),
+        );
         let resp = app
             .clone()
             .oneshot(
@@ -719,7 +849,7 @@ mod tests {
         let state = test_state(FakeReg(signer.address()));
         let app = router_generic(state);
 
-        let m = manifest([4; 32], "fp:trend", "Trending Tune", signer.address());
+        let m = manifest([4; 32], &fp_str(0xd2), "Trending Tune", signer.address());
         let resp = app
             .clone()
             .oneshot(
@@ -752,7 +882,7 @@ mod tests {
         let state = test_state(FakeReg(signer.address()));
         let app = router_generic(state);
 
-        let m = manifest([5; 32], "fp:manifest", "Manifest Work", signer.address());
+        let m = manifest([5; 32], &fp_str(0xd3), "Manifest Work", signer.address());
         let resp = app
             .clone()
             .oneshot(
@@ -801,7 +931,7 @@ mod tests {
         let state = test_state(FakeReg(signer.address()));
         let app = router_generic(state);
 
-        let m = manifest([6; 32], "fp:creator", "Creator Work", signer.address());
+        let m = manifest([6; 32], &fp_str(0xd4), "Creator Work", signer.address());
         let resp = app
             .clone()
             .oneshot(
@@ -850,7 +980,7 @@ mod tests {
         let state = test_state(FakeReg(signer.address()));
         let app = router_generic(state);
 
-        let a = manifest([7; 32], "fp:aa", "First Work", signer.address());
+        let a = manifest([7; 32], &fp_str(0xd5), "First Work", signer.address());
         let resp = app
             .clone()
             .oneshot(
@@ -863,7 +993,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CREATED);
 
-        let b = manifest([8; 32], "fp:aa", "Second Work", signer.address());
+        let b = manifest([8; 32], &fp_str(0xd5), "Second Work", signer.address());
         let resp = app
             .oneshot(
                 Request::post("/manifests")
@@ -874,5 +1004,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    /// A manifest whose `fingerprint` field is not a well-formed
+    /// `cwe-fingerprint` (design §6) is rejected with 400, even though it
+    /// otherwise passes chain validation, and never reaches the index.
+    #[tokio::test]
+    async fn ingest_rejects_bad_fingerprint() {
+        let signer = PrivateKeySigner::random();
+        let state = test_state(FakeReg(signer.address()));
+        let app = router_generic(state);
+
+        let m = manifest(
+            [10; 32],
+            "not-a-fingerprint",
+            "Bad FP Work",
+            signer.address(),
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/manifests")
+                    .header("content-type", "application/json")
+                    .body(Body::from(ingest_body(&m, &signer)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

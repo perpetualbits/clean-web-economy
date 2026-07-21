@@ -9,6 +9,7 @@ description = "Privacy-preserving discovery hub for the Clean Web Economy"
 
 [dependencies]
 cwe-wallet-zk = { path = "../../libs/wallet-zk" }
+cwe-fingerprint = { path = "../../libs/fingerprint" }
 alloy = { version = "2", features = ["full"] }
 # `sync` is declared explicitly because the API holds the index behind a
 # tokio::sync::RwLock; without it the crate would compile only via dependency

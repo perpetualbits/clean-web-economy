@@ -12,7 +12,8 @@
 #   2. register one work (deployer is owner + verified creator + registrant)
 #   3. start `cwe-hub` pointed at the freshly deployed registry
 #   4. sign a manifest as the registrant and POST it to /manifests -> 201
-#   5. GET /resolve/{fingerprint} and /search?q=... and find the work
+#   5. GET /resolve/content/{content_id}, /resolve/fingerprint/{fp}, and
+#      /search?q=... and find the work
 #   6. sign the same manifest fields as a non-registrant and POST -> 4xx
 #
 # Requirements: foundry (anvil/forge/cast), cargo, jq, curl. No Docker needed —
@@ -75,7 +76,7 @@ hub_ready=0
 for _ in $(seq 1 40); do curl -sf $HUB/healthz >/dev/null 2>&1 && { hub_ready=1; break; }; sleep 0.25; done
 [ "$hub_ready" = "1" ] || { echo "FAIL: hub never became ready"; exit 1; }
 
-FP="fp:$(printf 'a%.0s' {1..64})"
+FP="fp:$(printf 'a%.0s' {1..256})"
 manifest() { cat <<JSON
 {"work_id":"$WORK_ID","fingerprint":"$FP","title":"Blue Ocean","description":"demo","tags":["calm"],"work_type":"audio","price_per_min":1000000,"region":"$EU","creator_id":"$1","created_at":1,"content_id":"$CONTENT_ID","payees":[["$PAYEE",1000000]]}
 JSON
@@ -86,8 +87,9 @@ ENVELOPE=$(manifest $DEPLOYER_ADDR | PRIVATE_KEY=$DEPLOYER "$ROOT/target/debug/s
 CODE=$(curl -s -o "$WORK/post.out" -w '%{http_code}' -X POST $HUB/manifests -H 'content-type: application/json' -d "$ENVELOPE")
 [ "$CODE" = "201" ] || { echo "FAIL: ingest expected 201, got $CODE"; cat "$WORK/post.out"; exit 1; }
 
-# --- resolve + search --------------------------------------------------------
-curl -sf "$HUB/resolve/$FP" | jq -e '.work_id' >/dev/null || { echo "FAIL: resolve"; exit 1; }
+# --- resolve (Tier 1 content id, Tier 2 fingerprint) + search ----------------
+curl -sf "$HUB/resolve/content/$CONTENT_ID" | jq -e '.work_id' >/dev/null || { echo "FAIL: resolve/content"; exit 1; }
+curl -sf "$HUB/resolve/fingerprint/$FP" | jq -e '.candidate.work_id' >/dev/null || { echo "FAIL: resolve/fingerprint"; exit 1; }
 curl -sf "$HUB/search?q=ocean" | jq -e '.results[0].title == "Blue Ocean"' >/dev/null || { echo "FAIL: search"; exit 1; }
 
 # --- a manifest signed by a non-registrant must be rejected (4xx) -----------
