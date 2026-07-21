@@ -84,6 +84,8 @@ contract CWERegistry is ICWERegistry, Ownable {
         if (!isVerifiedCreator[msg.sender]) revert NotVerifiedCreator();
         // Validate the payee/split arrays before touching storage.
         _validateSplits(payees, splits);
+        // Exactly one consent signature per payee (guards a too-short/too-long array).
+        if (consentSigs.length != payees.length) revert BadArrayLengths();
 
         // Verify every payee consented to their exact share (provenance).
         for (uint256 i = 0; i < payees.length; i++) {
@@ -99,18 +101,22 @@ contract CWERegistry is ICWERegistry, Ownable {
             // First registration: the caller becomes the immutable registrant.
             work.registrant = msg.sender;
             work.exists = true;
+            // Registration time is the priority key the escrow challenge rule uses
+            // ("earliest registration wins"), so set it ONCE here and never reset
+            // it on a later update.
+            work.registeredAt = block.timestamp;
         } else if (work.registrant != msg.sender) {
             // Updates are restricted to whoever first registered the work.
             revert NotRegistrant();
         }
 
-        // Overwrite the mutable fields (arrays are replaced wholesale).
+        // Overwrite the mutable fields (arrays are replaced wholesale). Note:
+        // `registeredAt` is deliberately NOT touched here — see the isNew branch.
         work.payees = payees;
         work.splits = splits;
         work.pricePerMin = pricePerMin;
         work.regionRule = regionRule;
         work.contentId = contentId;
-        work.registeredAt = block.timestamp;
 
         // Emit the event that matches whether this created or updated the work.
         if (isNew) {

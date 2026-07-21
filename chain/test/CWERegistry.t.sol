@@ -135,6 +135,24 @@ contract CWERegistryTest is Test {
         assertEq(registry.pricePerMinOf(WORK), 2000);
     }
 
+    /// @notice Updating a work preserves its original registration timestamp, which
+    ///         is the priority key the escrow challenge rule relies on.
+    function test_update_preservesRegisteredAt() public {
+        (address payable[] memory payees, uint96[] memory splits) = _splitArrays();
+        bytes[] memory sigs = _defaultConsents(splits);
+
+        vm.warp(1000);
+        vm.prank(creator);
+        registry.registerWork(WORK, CONTENT, payees, splits, sigs, 1000, bytes32("EU"));
+        assertEq(registry.registeredAtOf(WORK), 1000);
+
+        // A later update by the registrant must NOT move the priority timestamp.
+        vm.warp(5000);
+        vm.prank(creator);
+        registry.registerWork(WORK, CONTENT, payees, splits, sigs, 2000, bytes32("US"));
+        assertEq(registry.registeredAtOf(WORK), 1000, "registeredAt must be first-registration time");
+    }
+
     /// @notice The registrant and region are readable after registration.
     function test_getters_exposeRegistrantAndRegion() public {
         (address payable[] memory payees, uint96[] memory splits) = _splitArrays();
