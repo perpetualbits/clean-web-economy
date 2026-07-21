@@ -81,7 +81,7 @@ clients/player-plugin/   (crate: cwe-player)
   src/settle.rs     Opening::commit → submitConsumption (alloy) + disclosure export
   src/config.rs     env config (HUB_URL, RPC_URL, PRIVATE_KEY, CONSUMPTION, TIER_ID,
                     THRESHOLD, STATE, DISCLOSURE)
-  src/main.rs       CLI: `cwe-player play <file>` | `cwe-player settle`
+  src/main.rs       CLI: `cwe-player play <file>` | `cwe-player status` | `cwe-player settle`
 ```
 
 ### Reused, not rebuilt
@@ -156,6 +156,10 @@ required only by `settle`, and their absence is reported before any transaction.
   minutes; an over-cap work is refused (not accrued) with a clear reason; an
   unrecognised work (no signed match, no fingerprint match, or the hub is unreachable)
   is reported and nothing is accrued.
+- **`cwe-player status`** — read-only: print the current session's epoch, the accrued
+  usage per work (`work_id`, minutes), and the pending `escrow_works` set, without
+  submitting or mutating anything. No chain interaction; needs only `STATE`. It is how
+  a user sees "what have I accrued this epoch" before settling.
 - **`cwe-player settle`** — flush accrued usage, submit commitments on-chain, and write
   the disclosure. Reports the tx hash and the works settled. With no accrued usage it
   exits with a clear "nothing to settle" message rather than submitting an empty tx.
