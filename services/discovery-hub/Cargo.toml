@@ -32,3 +32,7 @@ path = "src/main.rs"
 [[bin]]
 name = "sign-manifest"
 path = "src/bin/sign_manifest.rs"
+
+[[bin]]
+name = "sign-consent"
+path = "src/bin/sign_consent.rs"

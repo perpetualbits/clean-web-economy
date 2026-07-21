@@ -5,7 +5,9 @@
 //! so the hub can recover the signer and check it against the registry registrant.
 
 pub use alloy::primitives::Address;
+use alloy::primitives::{keccak256, FixedBytes, U256};
 use alloy::signers::Signature;
+use alloy::sol_types::SolValue;
 use cwe_wallet_zk::Bytes32;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +27,10 @@ pub struct WorkManifest {
     /// On-chain CWERegistry work id.
     #[schema(value_type = String)]
     pub work_id: Bytes32,
+    /// On-chain content id (distinct from `work_id`; identifies the specific
+    /// content revision the split table applies to).
+    #[schema(value_type = String)]
+    pub content_id: Bytes32,
     /// The `fp:<hex>` fingerprint from `cwe-fingerprint`.
     pub fingerprint: String,
     /// Human-readable title (indexed for search).
@@ -45,6 +51,10 @@ pub struct WorkManifest {
     pub creator_id: Address,
     /// Client Unix seconds when authored (used only for recency).
     pub created_at: u64,
+    /// The revenue split table: each payee's address and its share, out of the
+    /// contract's total share denominator (matches `CWERegistry`'s split table).
+    #[schema(value_type = Vec<(String, u64)>)]
+    pub payees: Vec<(Address, u64)>,
 }
 
 /// Errors from canonicalising or verifying a manifest.
@@ -59,6 +69,28 @@ pub enum ManifestError {
     /// Address recovery from the signature failed.
     #[error("recovering signer: {0}")]
     Recover(String),
+}
+
+/// The keccak256 digest a payee signs to consent to their split share,
+/// matching the Solidity `CWERegistry.consentDigest`
+/// (`keccak256(abi.encode(workId, contentId, payee, share))`).
+///
+/// `share` is encoded as a `U256`: `abi.encode` right-pads a `uint96` into the
+/// same 32-byte word as a `uint256`, so for any `share < 2^96` the encoded
+/// bytes are identical to the contract's `uint96` encoding.
+pub fn consent_digest(
+    work_id: Bytes32,
+    content_id: Bytes32,
+    payee: Address,
+    share: u64,
+) -> [u8; 32] {
+    let tuple = (
+        FixedBytes::<32>::from(work_id.0),
+        FixedBytes::<32>::from(content_id.0),
+        payee,
+        U256::from(share),
+    );
+    *keccak256(tuple.abi_encode())
 }
 
 impl WorkManifest {
@@ -91,6 +123,7 @@ mod tests {
     fn sample() -> WorkManifest {
         WorkManifest {
             work_id: Bytes32([0xAA; 32]),
+            content_id: Bytes32([0xBB; 32]),
             fingerprint: "fp:".to_string() + &"11".repeat(32),
             title: "Test Track".to_string(),
             description: "a demo".to_string(),
@@ -100,6 +133,7 @@ mod tests {
             region: Bytes32([0; 32]),
             creator_id: Address::ZERO,
             created_at: 1_721_500_000,
+            payees: vec![(Address::ZERO, 1_000_000)],
         }
     }
 
@@ -108,6 +142,25 @@ mod tests {
     fn canonical_bytes_are_stable() {
         let m = sample();
         assert_eq!(m.canonical_bytes().unwrap(), m.canonical_bytes().unwrap());
+    }
+
+    /// A consent signature produced for a share recovers to the payee, and the digest
+    /// matches the encoding the contract uses (keccak256(abi.encode(work,content,payee,share))).
+    #[test]
+    fn consent_digest_and_recover() {
+        let signer = PrivateKeySigner::random();
+        let digest = consent_digest(
+            Bytes32([1; 32]),
+            Bytes32([2; 32]),
+            signer.address(),
+            700_000,
+        );
+        let sig = signer.sign_message_sync(&digest).unwrap();
+        // EIP-191 recover over the 32-byte digest.
+        assert_eq!(
+            sig.recover_address_from_msg(digest).unwrap(),
+            signer.address()
+        );
     }
 
     /// A signature recovers to the signer's address; a tampered manifest does not.

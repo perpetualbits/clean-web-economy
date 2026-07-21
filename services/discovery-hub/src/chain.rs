@@ -185,6 +185,7 @@ mod tests {
     fn manifest(creator: Address) -> WorkManifest {
         WorkManifest {
             work_id: Bytes32([1; 32]),
+            content_id: Bytes32([2; 32]),
             fingerprint: "fp:aa".to_string(),
             title: "Song".to_string(),
             description: String::new(),
@@ -194,6 +195,7 @@ mod tests {
             region: Bytes32([7; 32]),
             creator_id: creator,
             created_at: 1,
+            payees: vec![(creator, 1_000_000)],
         }
     }
 

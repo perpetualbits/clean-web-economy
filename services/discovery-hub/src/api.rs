@@ -431,6 +431,7 @@ mod tests {
 
         let m = WorkManifest {
             work_id: Bytes32([1; 32]),
+            content_id: Bytes32([1; 32]),
             fingerprint: "fp:aa".to_string(),
             title: "Song".to_string(),
             description: String::new(),
@@ -440,6 +441,7 @@ mod tests {
             region: Bytes32([0; 32]),
             creator_id: signer.address(),
             created_at: 1,
+            payees: vec![(signer.address(), 1_000_000)],
         };
         let sig = format!(
             "0x{}",
@@ -481,6 +483,7 @@ mod tests {
 
         let m = WorkManifest {
             work_id: Bytes32([9; 32]),
+            content_id: Bytes32([9; 32]),
             fingerprint: "fp:clamp".to_string(),
             title: "Future".to_string(),
             description: String::new(),
@@ -490,6 +493,7 @@ mod tests {
             region: Bytes32([0; 32]),
             creator_id: signer.address(),
             created_at: u64::MAX, // absurd future timestamp
+            payees: vec![(signer.address(), 1_000_000)],
         };
         // Capture the work id (Copy) before `m` is moved into the request body.
         let work_id = m.work_id;
@@ -566,6 +570,7 @@ mod tests {
 
         let m = WorkManifest {
             work_id: Bytes32([2; 32]),
+            content_id: Bytes32([2; 32]),
             fingerprint: "fp:bb".to_string(),
             title: "Song".to_string(),
             description: String::new(),
@@ -575,6 +580,7 @@ mod tests {
             region: Bytes32([0; 32]),
             creator_id: registrant.address(),
             created_at: 1,
+            payees: vec![(registrant.address(), 1_000_000)],
         };
         let sig = format!(
             "0x{}",
@@ -641,6 +647,7 @@ mod tests {
     ) -> WorkManifest {
         WorkManifest {
             work_id: Bytes32(work_id),
+            content_id: Bytes32(work_id),
             fingerprint: fingerprint.to_string(),
             title: title.to_string(),
             description: String::new(),
@@ -650,6 +657,7 @@ mod tests {
             region: Bytes32([0; 32]),
             creator_id: creator,
             created_at: 1,
+            payees: vec![(creator, 1_000_000)],
         }
     }
 

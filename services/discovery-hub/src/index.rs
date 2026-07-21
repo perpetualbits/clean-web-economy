@@ -250,6 +250,7 @@ mod tests {
     fn manifest(wid: u8, fp: &str, title: &str, wt: WorkType, created: u64) -> WorkManifest {
         WorkManifest {
             work_id: Bytes32([wid; 32]),
+            content_id: Bytes32([wid; 32]),
             fingerprint: fp.to_string(),
             title: title.to_string(),
             description: String::new(),
@@ -259,6 +260,7 @@ mod tests {
             region: Bytes32([0; 32]),
             creator_id: Address::ZERO,
             created_at: created,
+            payees: vec![(Address::ZERO, 1_000_000)],
         }
     }
 
