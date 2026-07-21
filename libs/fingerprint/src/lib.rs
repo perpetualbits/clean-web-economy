@@ -42,10 +42,18 @@ pub struct Fingerprint {
 /// Errors parsing a fingerprint from text.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FingerprintError {
+    /// The string did not begin with the required `fp:` prefix.
     #[error("fingerprint must start with the 'fp:' prefix")]
     MissingPrefix,
+    /// The hex portion had the wrong number of characters.
     #[error("fingerprint hex must be {expected} chars, found {found}")]
-    BadLength { expected: usize, found: usize },
+    BadLength {
+        /// How many hex characters a valid fingerprint has.
+        expected: usize,
+        /// How many were actually supplied.
+        found: usize,
+    },
+    /// The hex portion contained a non-hexadecimal character.
     #[error("fingerprint contains a non-hexadecimal character")]
     NotHex,
 }
@@ -115,7 +123,7 @@ impl Fingerprint {
         out
     }
 
-    /// 64-hex-char keccak256 id of the fingerprint (compact key for exact dedup).
+    /// The 32-byte keccak256 id of the fingerprint (a compact key for exact dedup).
     pub fn id(&self) -> [u8; 32] {
         let mut h = Keccak::v256();
         h.update(&self.to_bytes());
@@ -150,6 +158,7 @@ impl Fingerprint {
 }
 
 impl fmt::Display for Fingerprint {
+    /// Render the fingerprint in its canonical `fp:<hex>` form.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{PREFIX}{}", self.to_hex())
     }
@@ -167,7 +176,9 @@ pub fn compare(a: &Fingerprint, b: &Fingerprint) -> f64 {
 
 /// Linear-interpolation resampler from `from` Hz to `to` Hz.
 fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
-    if from == to || samples.is_empty() {
+    // A zero source rate is meaningless; treat it (and the no-op case) as identity
+    // rather than dividing by zero and allocating an unbounded buffer.
+    if from == 0 || from == to || samples.is_empty() {
         return samples.to_vec();
     }
     let ratio = from as f64 / to as f64;
@@ -263,5 +274,11 @@ mod tests {
     fn hex_round_trip() {
         let a = Fingerprint::compute(&tone(440.0, 0.8, 3.0, 11025), 11025);
         assert_eq!(Fingerprint::parse(&a.to_string()).unwrap(), a);
+    }
+
+    /// A zero sample rate is handled gracefully (no panic / unbounded allocation).
+    #[test]
+    fn zero_sample_rate_does_not_panic() {
+        let _ = Fingerprint::compute(&tone(440.0, 0.8, 1.0, 11025), 0);
     }
 }
