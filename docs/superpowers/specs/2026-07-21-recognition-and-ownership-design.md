@@ -96,6 +96,41 @@ its credit is routed to **escrow** (§5).
 
 ---
 
+### 3.3 Provenance for collaborative works (multi-party consent)
+
+Real works have many beneficiaries with shares that vary per work (a band; a
+session musician on one song; different collaborators on another; a cover designer
+taking a small cut across the album). Provenance for such a work is **not** proven
+by the registrant's signature alone — that would merely *assert* the collaborators'
+shares. It is proven by **each beneficiary cryptographically consenting to their
+own share.**
+
+Procedure:
+1. Every participant holds an identity key (an address; verifiable credentials are
+   deferred to H6). A cross-work participant (e.g. the cover designer) is simply a
+   payee in several works' split tables.
+2. Each **song is a work** with a split table `{payee_i → share_i}` (ppm, summing
+   to `PPM_TOTAL`) declared inside the creator-signed content manifest.
+3. **Each payee signs a consent attestation** over `(work_id, content_id,
+   payee_address, share)`. The set of these signatures is the work's provenance
+   record: proof that everyone paid agreed to their amount, and that no address is
+   assigned earnings without its own consent.
+4. **Registration** verifies both the registrant's manifest signature (binds the
+   content) and **every payee's consent signature** (binds the split). A work is
+   "fully attested" only when all consent signatures verify. Consent signatures are
+   collected off-chain (a creator-portal flow) and verified on-chain at registration
+   (per-payee `ecrecover`), so the split is provably consented, not merely declared.
+5. **Payout** is unchanged mechanically — `CWERegistry` already stores
+   `payees[]+splits[]` and `CWEPayouts` distributes atomically by ppm — but every
+   distribution is now backed by on-chain-verified multi-party consent.
+
+This is what "a right-holder proves provenance" means in practice: **what** content
+(`content_id`), **who** benefits and by how much (registrant + consenting payees),
+and **when** (registration timestamp). It also strengthens the anti-fraud goal —
+CWE can never pay a share to an address that did not consent to it, and no
+participant can later claim a share they never signed for. (Spec:
+`docs/specs/collaborator_split_royalty_flow_specification.md`.)
+
 ## 4. Why signing ≠ proof of authorship (stated plainly)
 
 Cryptographic signing proves **possession of the bytes**, **identity** (the
@@ -173,7 +208,8 @@ is a fallback that never auto-pays.
 | Component | Change |
 |---|---|
 | `libs/fingerprint` | real acoustic fingerprint + Hamming `compare`; evolved `Fingerprint` type |
-| `chain/CWERegistry` | store `content_id` + registration timestamp; getters |
+| `chain/CWERegistry` | store `content_id` + registration timestamp; **verify each payee's consent signature at registration** (per-payee `ecrecover` over `(work_id, content_id, payee, share)`); getters |
+| tooling | a `sign-consent` / manifest-assembly flow (extends the `sign-manifest` CLI) so payees produce consent signatures the registrant collects |
 | `chain` (new) | `CWEEscrow` (or payouts escrow dimension) + `IArbiter` seam + accept-earliest stub |
 | `services/discovery-hub` | fingerprint nearest-match index; resolve returns signed-exact vs fp-candidate (+distance) |
 | `services/settlement` | route signed → direct payout, fp-match → escrow; process release/reassignment |
@@ -212,9 +248,10 @@ is a fallback that never auto-pays.
 ## 10. Milestones (for the plan to detail)
 
 1. Perceptual fingerprint in `libs/fingerprint` (fixed-length, Hamming `compare`, robustness tests).
-2. `CWERegistry`: `content_id` + registration timestamp (+ getters, tests).
-3. `CWEEscrow` + `IArbiter` seam + accept-earliest stub (commit/challenge/release, tests).
-4. Hub: fingerprint nearest-match index; resolve signed-exact vs fp-candidate.
-5. Settlement: route signed → direct, fp → escrow; release/reassignment.
-6. Client: content-hash + signature verification (Tier 1); FP + escrow-aware status (Tier 2).
-7. `make ownership-demo` end-to-end + docs.
+2. `CWERegistry`: `content_id` + registration timestamp + **per-payee consent-signature verification** (+ getters, tests).
+3. Consent tooling: a `sign-consent` flow (payees sign their share) + manifest assembly that collects consents (extends `sign-manifest`).
+4. `CWEEscrow` + `IArbiter` seam + accept-earliest stub (commit/challenge/release, tests).
+5. Hub: fingerprint nearest-match index; resolve signed-exact vs fp-candidate.
+6. Settlement: route signed → direct, fp → escrow; release/reassignment.
+7. Client: content-hash + signature verification (Tier 1); FP + escrow-aware status (Tier 2).
+8. `make ownership-demo` end-to-end (incl. a multi-collaborator work) + docs.
