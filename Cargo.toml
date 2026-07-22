@@ -24,6 +24,7 @@ members = [
     "sims",               # WP2 — DAPR payout-math reference crate
     "services/settlement",  # WP5 — off-chain epoch settlement job
     "services/discovery-hub", # Phase 2 — Discovery Hub service
+    "clients/player-plugin",  # Phase 2.2 — desktop player agent
 ]
 
 # The browser-extension core is a wasm crate built by wasm-pack (not the native

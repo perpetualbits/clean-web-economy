@@ -1,0 +1,36 @@
+# Phase 2.2 — the desktop player agent.
+#
+# A native Rust binary that decodes a local audio file, recognises the work via
+# the Discovery Hub (signed content first, perceptual fingerprint fallback),
+# applies the price cap, accrues listening time, and settles on-chain. It is the
+# desktop analogue of the browser extension, reusing the same Rust core natively.
+[package]
+name = "cwe-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Desktop media player agent for the Clean Web Economy"
+
+[dependencies]
+# The shared core: perceptual fingerprint (Tier 2) and keccak content id (Tier 1).
+cwe-fingerprint = { path = "../../libs/fingerprint" }
+# Commitments, the Bytes32 hex type, keccak256, and the session accrual store.
+cwe-wallet-zk = { path = "../../libs/wallet-zk" }
+
+# Pure-Rust audio decode. `wav`+`pcm` cover the demo fixture; flac/mp3 are bonus
+# formats a real desktop user is likely to have.
+symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "flac", "mp3"] }
+# HTTP client for the hub's resolve endpoints.
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+# Ethereum stack for the on-chain consumption submission (same version as settlement).
+alloy = { version = "2", features = ["full"] }
+# Async runtime alloy's provider requires.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Fresh 32-byte salts for commitments.
+rand = "0.8"
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+hex.workspace = true
