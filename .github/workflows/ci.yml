@@ -220,3 +220,32 @@ jobs:
 
       - name: Run the demo
         run: make -C ops player-demo
+
+  # ---------------------------------------------------------------------------
+  # Arbitration-jury end-to-end demo: a fraudster registers first, the real
+  # owner registers second on the same content -> a listener's fingerprint-
+  # matched play escrows credit under the fraudster's work -> the real owner
+  # challenges -> a 3-juror committee votes 2-1 for the real owner, overturning
+  # what the earliest-registration default would have kept -> the verdict
+  # reassigns the escrow and releases it to the real owner. Run headlessly on
+  # Anvil, same pattern as `e2e` above.
+  # ---------------------------------------------------------------------------
+  arbitration-e2e:
+    name: Arbitration-jury end-to-end demo (Anvil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # `jq` parses the deployment addresses and the settlement's proof output.
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run the demo
+        run: make -C ops arbitration-demo
