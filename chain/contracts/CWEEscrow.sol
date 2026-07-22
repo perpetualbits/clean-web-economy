@@ -193,6 +193,10 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
         }
 
         // Open the dispute and remember the challenger; the verdict lands later.
+        // The store below necessarily happens after this call, since it needs
+        // the id the call returns; `jury` is trusted, immutable, and makes no
+        // external calls of its own, so this ordering cannot be exploited to
+        // reenter the escrow.
         uint256 disputeId = jury.openDispute(escrowedWork, challengerWork);
         from.disputeId = disputeId;
         from.challenger = challengerWork;
@@ -228,6 +232,19 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
             to.releaseEpoch = releaseEpoch;
             to.contentId = contentId;
             to.committed = true;
+            // The challenger's OWN escrow for this (epoch, work) may already have
+            // been released independently -- release is permissionless and the
+            // voting window (21 days) is long enough for that slot's own
+            // challenge window to have elapsed while this dispute was pending.
+            // If so, its prior `amount` was already zeroed on that release (see
+            // `release`), so the `+=` above is exactly the reassigned amount --
+            // nothing is double-paid. But a released slot can never be released
+            // again (`AlreadyReleased`), so without reopening it here the
+            // reassigned money would be frozen in this contract forever. Reset
+            // `released` so the reassigned amount can actually reach the
+            // dispute-winning challenger's payees; if the slot was never
+            // released this is a harmless no-op (it is already false).
+            to.released = false;
             // to.disputeId stays 0: the new holder is undisputed and releasable.
             emit DisputeResolved(epochId, escrowedWork, challengerWork, disputeId);
         } else {

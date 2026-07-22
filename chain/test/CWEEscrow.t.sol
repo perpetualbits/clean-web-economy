@@ -456,6 +456,70 @@ contract CWEEscrowTest is Test {
         assertEq(escrow.liability(), 0);
     }
 
+    /// @notice Reproduces the fund-freeze scenario the reassignment must avoid:
+    ///         two works over the SAME content can each hold their own escrow in
+    ///         one epoch, since `commit` and `release` are per-work-id and the
+    ///         21-day voting window gives plenty of time for the challenger's
+    ///         own escrow slot to release before its dispute resolves. When the
+    ///         dispute then resolves in the challenger's favor, the reassigned
+    ///         amount must land in a releasable (not already-released) slot.
+    function test_resolveDispute_challengerAlreadyReleased_notFrozen() public {
+        bytes32 challengerWork = keccak256("work-challenger");
+        bytes32 escrowedWork = keccak256("work-escrowed");
+
+        // The challenger registers earlier, so the jurorless fallback favours
+        // it once the dispute resolves.
+        vm.warp(1000);
+        _registerAWithContent(challengerWork, CONTENT_A);
+        vm.warp(2000);
+        _registerBWithContent(escrowedWork, CONTENT_A);
+
+        uint256 challengerAmount = 1 ether;
+        uint256 escrowedAmount = 1 ether;
+        vm.deal(address(escrow), challengerAmount + escrowedAmount);
+
+        // The challenger's OWN escrow is committed (and released) first, so
+        // its window closes well before `escrowedWork`'s -- exactly the
+        // lagging-settlement pattern `commit` is built to allow (see its
+        // @dev note: the window runs from commit time, not the usage epoch).
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, challengerWork, challengerAmount);
+        vm.warp(30 days);
+        escrow.release(EPOCH, challengerWork);
+        assertTrue(escrow.isReleased(EPOCH, challengerWork));
+        assertEq(payeeA1.balance, 0.6 ether);
+        assertEq(payeeA2.balance, 0.4 ether);
+
+        // `escrowedWork` is committed only now, well after the challenger's
+        // slot released -- its own challenge window is therefore still open
+        // when the challenge below is raised, even though the challenger
+        // work it names has already been paid out from its own slot.
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, escrowedWork, escrowedAmount);
+
+        // Challenge `escrowedWork` with the (already-released) challenger and
+        // drive the dispute to completion via the jurorless fallback.
+        escrow.challenge(EPOCH, escrowedWork, challengerWork);
+        uint256 disputeId = escrow.disputeIdOf(EPOCH, escrowedWork);
+        vm.warp(block.timestamp + jury.VOTING_WINDOW());
+        jury.finalize(disputeId);
+        escrow.resolveDispute(EPOCH, escrowedWork);
+
+        // The escrowed amount reassigned into the challenger's slot...
+        assertEq(escrow.escrowOf(EPOCH, challengerWork), escrowedAmount);
+
+        // ...and, critically, that slot is releasable again -- not stuck
+        // behind `AlreadyReleased` -- so the reassigned money can actually
+        // leave the contract.
+        vm.warp(block.timestamp + 30 days);
+        escrow.release(EPOCH, challengerWork);
+        assertEq(payeeA1.balance, 0.6 ether + 0.6 ether);
+        assertEq(payeeA2.balance, 0.4 ether + 0.4 ether);
+
+        // No permanent freeze: every wei committed has now left the contract.
+        assertEq(escrow.liability(), 0);
+    }
+
     /// @notice A resolved dispute the incumbent won clears the dispute in
     ///         place, leaving the escrow exactly as it was and releasable.
     function test_resolveDispute_incumbentKeeps() public {
