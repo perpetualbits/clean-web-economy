@@ -6,6 +6,7 @@
 pub mod config;
 pub mod decode;
 pub mod policy;
+pub mod recognize;
 pub mod session;
 
 /// The crate-wide error type surfaced by the CLI.
