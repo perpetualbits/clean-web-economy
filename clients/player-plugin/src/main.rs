@@ -142,12 +142,28 @@ fn cmd_settle() -> Result<(), String> {
     });
     let escrow_works = session.take_escrow_works();
 
-    // Submit on-chain (async) via a small runtime, then persist the drained state.
-    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    let (tx, user_addr) = rt
-        .block_on(settle::submit_consumption(&cfg, &openings))
-        .map_err(|e| e.to_string())?;
+    // Write the disclosure BEFORE the on-chain submit. The openings carry
+    // fresh random salts that live only in this file — if the disclosure
+    // write happened after a successful submit and then failed (disk IO),
+    // the on-chain commitments would be unclaimable forever, and the write
+    // is exactly the step most likely to fail. Deriving the address up
+    // front (no tx) lets the disclosure be written first, so the more
+    // common failure (IO) is caught before anything irreversible happens.
+    let (private_key, _consumption, _tier_id) = cfg.require_chain().map_err(|e| e.to_string())?;
+    let user_addr = settle::signer_address(private_key).map_err(|e| e.to_string())?;
     settle::write_disclosure(&cfg.disclosure_path, &user_addr, &openings, &escrow_works)
+        .map_err(|e| e.to_string())?;
+
+    // Submit on-chain (async) via a small runtime, then persist the drained state.
+    // Residual edge case: if the submit above succeeds but `session.save` below
+    // then fails, the flushed usage is gone from memory but not yet committed to
+    // disk, so a retry would re-flush stale state and re-submit the same
+    // commitments on-chain. This duplicate-submit window is an accepted MVP
+    // limitation; production would close it with a persisted per-epoch
+    // "submitted" marker written atomically with (or before) the tx.
+    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    let (tx, _addr) = rt
+        .block_on(settle::submit_consumption(&cfg, &openings))
         .map_err(|e| e.to_string())?;
     session.save(&cfg.state_path).map_err(|e| e.to_string())?;
 

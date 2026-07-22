@@ -74,6 +74,15 @@ pub fn write_disclosure(
     std::fs::write(path, json + "\n").map_err(|e| SettleError::Io(e.to_string()))
 }
 
+/// Derive the agent's `0x`-hex address from its private key, without sending
+/// any transaction — so the disclosure (which keys on this address) can be
+/// written before the irreversible on-chain submit.
+pub fn signer_address(private_key: &str) -> Result<String, SettleError> {
+    let signer =
+        PrivateKeySigner::from_str(private_key).map_err(|e| SettleError::Signer(e.to_string()))?;
+    Ok(format!("{:#x}", signer.address()))
+}
+
 /// Submit the openings' commitments to `CWEConsumption`, returning the tx hash
 /// and the agent's address (the disclosure key). Async: uses alloy's provider.
 pub async fn submit_consumption(
@@ -162,6 +171,19 @@ mod tests {
         assert_eq!(openings[0].minutes, 4);
         let expected = Opening::new(Bytes32([7; 32]), 4, salt).commit();
         assert_eq!(openings[0].commit(), expected);
+    }
+
+    /// The well-known Anvil dev key derives its well-known address, so the
+    /// pre-submit disclosure write keys on the same address the tx will use.
+    #[test]
+    fn signer_address_matches_anvil_dev_key() {
+        let addr =
+            signer_address("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+                .unwrap();
+        assert_eq!(
+            addr.to_lowercase(),
+            "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+        );
     }
 
     /// The disclosure JSON has the settlement job's exact shape.
