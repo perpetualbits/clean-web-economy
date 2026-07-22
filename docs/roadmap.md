@@ -11,7 +11,7 @@ detailed, status-annotated plan.
 
 ## 1. Where we are
 
-Three milestones are complete and merged to `main`, each with a one-command
+Four milestones are complete and merged to `main`, each with a one-command
 end-to-end demo on a local Anvil devnet.
 
 | Area | Built | Status |
@@ -23,7 +23,8 @@ end-to-end demo on a local Anvil devnet.
 | **Settlement** (`services/settlement`) | reads events, opens commitments, runs DAPR, commits Merkle root; routes signed → direct payout, fingerprint → escrow | ✅ Phase 1 · H1 |
 | **Browser extension** (`clients/browser-ext`) | Rust→WASM core + MV3 shell; local accounting, price cap, settle flow; two-tier recognition (signed content + fingerprint fallback) | ✅ Phase 1 · H1 |
 | **Discovery Hub** (`services/discovery-hub`) | signed, chain-anchored manifest ingest; content-id (Tier 1) + fingerprint nearest-match (Tier 2) resolve; search/trending; OpenAPI | ✅ Phase 2·1 · H1 |
-| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e) | ✅ |
+| **Player agent** (`clients/player-plugin`) | native Rust `cwe-player`: symphonia decode → two-tier recognition → price cap → accrual → on-chain settle; `play`/`status`/`settle`/`fingerprint` | ✅ Phase 2·2 |
+| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, `make player-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e/player-e2e) | ✅ |
 
 ### What is real vs. stubbed
 
@@ -66,13 +67,15 @@ seam designed for drop-in replacement:
 
 ### Feature track
 
-#### Phase 2 — Video & News *(1 of 3 done)*
+#### Phase 2 — Video & News *(2 of 3 done)*
 - ✅ **2.1 Discovery Hub MVP** — resolution + search over signed manifests.
-- ⬜ **2.2 Player plugin (VLC/FFmpeg)** — a native desktop client that brings local
-  accounting + fingerprinting to video/audio outside the browser. Reuses the Rust
-  core (`cwe-fingerprint`, `cwe-wallet-zk`) via FFI/WASM behind a C plugin shim
-  (`clients/player-plugin/`). *Depends on:* nothing new; extends the Phase 1 client
-  surface. *Unblocks:* video usage feeding DAPR/discovery.
+- ✅ **2.2 Player agent (MVP)** — a native Rust desktop client (`cwe-player`,
+  `clients/player-plugin/`) bringing local accounting + fingerprinting outside the
+  browser: symphonia decode → two-tier recognition → price cap → accrual → on-chain
+  settle (`make ownership-demo`… `make player-demo`). Reuses the Rust core
+  (`cwe-fingerprint`, `cwe-wallet-zk`) natively. *Remaining seam:* the actual
+  VLC/FFmpeg C module is a thin FFI shim over this agent (deferred); audio-only for
+  now (video fingerprinting is its own item).
 - ⬜ **2.3 Arbitration jury flow (stub)** — dispute filing, juror selection, voting,
   resolution (`services/arbitration/`), with contract hooks. *Depends on:* identity
   primitives (can start with the allowlist stub). *Feeds:* Phase 4 governance.
@@ -133,7 +136,7 @@ track:
 ```mermaid
 flowchart LR
   P1[Phase 1 ✅] --> P21[2.1 Discovery ✅]
-  P1 --> P22[2.2 Player plugin]
+  P1 --> P22[2.2 Player agent ✅]
   P1 --> H1[H1 Recognition & Ownership ✅]
   P21 --> H9[H9 Discovery v2]
   H1 --> H9
@@ -156,17 +159,17 @@ trust-minimisation backbone but can trail the feature work.
 
 ## 5. Recommended near-term next steps
 
-Ranked by value-per-effort given what exists (H1 — recognition & ownership — is now
-✅ done, so the recognition/provenance/escrow foundation is in place):
+Ranked by value-per-effort given what exists (H1 — recognition & ownership — and
+Phase 2.2 — the player agent — are now ✅ done, so the recognition/provenance/escrow
+foundation and a native desktop client are both in place):
 
-1. **Phase 2.2 — Player plugin.** Extends paid consumption to desktop video/audio,
-   broadening the demo from "browser only" to real media players, and reuses the
-   entire Rust core (including the new fingerprint).
-2. **Phase 2.3 — Arbitration jury flow.** Promotes the `IArbiter` seam H1 introduced
-   from the earliest-registration stub to a real dispute/juror/voting process —
-   directly hardening the escrow challenge path.
-3. **H3 — Full DAPR + anti-fraud.** Builds on H1's escrow spine: bandwidth
+1. **Phase 2.3 — Arbitration jury flow.** The last of Phase 2. Promotes the
+   `IArbiter` seam H1 introduced from the earliest-registration stub to a real
+   dispute/juror/voting process — directly hardening the escrow challenge path.
+2. **H3 — Full DAPR + anti-fraud.** Builds on H1's escrow spine: bandwidth
    credibility, diminishing returns, diversity weighting, Sybil resistance. Then
    **Phase 3 (DMF)** once **H6 (identity)** is in place.
+3. **Player agent follow-ons.** The real VLC/FFmpeg C module (FFI shim over the
+   agent) and video fingerprinting, once the audio MVP has proven the flow.
 
 Each becomes its own spec → plan → build cycle. This document is updated as items land.
