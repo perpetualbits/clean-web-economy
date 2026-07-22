@@ -192,3 +192,31 @@ jobs:
 
       - name: Run the demo
         run: make -C ops ownership-demo
+
+  # ---------------------------------------------------------------------------
+  # Desktop player-agent end-to-end demo: register a signed work and a
+  # fingerprint-matched work -> start the hub -> the agent subscribes, plays
+  # both files (Tier 1 signed, Tier 2 fingerprint), and settles -> the
+  # aggregator settles the epoch -> the signed work's payee withdraws directly
+  # while the fingerprint-matched credit sits in escrow. Run headlessly on
+  # Anvil, same pattern as `e2e` above.
+  # ---------------------------------------------------------------------------
+  player-e2e:
+    name: Player-agent end-to-end demo (Anvil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # `jq` parses the deployment addresses and the settlement's proof output.
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run the demo
+        run: make -C ops player-demo
