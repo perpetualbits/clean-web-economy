@@ -135,10 +135,17 @@ impl Dataset {
         self.tier_fees.values().copied().sum()
     }
 
-    /// The bandwidth credibility for `work` in ppm; `1_000_000` (neutral) when the
-    /// bandwidth layer has provided none. A value below neutral discounts payout.
+    /// The bandwidth credibility for `work` in ppm, clamped to `[0, 1_000_000]`.
+    /// `1_000_000` (neutral) when the bandwidth layer has provided none. Clamping the
+    /// upper bound guarantees `cred ≤ raw`, so bandwidth can only discount payout — a
+    /// stray above-neutral value degrades to neutral instead of breaking conservation
+    /// and failing the epoch.
     pub fn bw(&self, work: &WorkId) -> u64 {
-        self.bandwidth_ppm.get(work).copied().unwrap_or(1_000_000)
+        self.bandwidth_ppm
+            .get(work)
+            .copied()
+            .unwrap_or(1_000_000)
+            .min(1_000_000)
     }
 }
 
@@ -350,15 +357,25 @@ fn apportion(total: u128, weights: &[u128], weight_sum: u128) -> Result<Vec<u128
     Ok(base)
 }
 
+/// Upper bound on the play count `d_ppm` iterates over. Real per-epoch plays are
+/// bounded by minutes listened; this cap purely defends the O(plays) loop against
+/// an adversarially large committed value. `d_ppm` is monotone non-increasing, so
+/// clamping to the cap yields a conservative (slightly higher) multiplier with a
+/// negligible payout effect — the diminishing average is already near its floor by
+/// this many plays — while bounding the work per row.
+pub const PLAYS_CAP: u64 = 100_000;
+
 /// The diminishing-returns multiplier for `plays` repeat plays, in ppm.
 ///
 /// `D(v) = ( Σ_{j=1..v} 1/(1 + k·(j-1)) ) / v`, with `k = k_ppm / 1_000_000`. The
 /// `j`-th play is worth `1/(1 + k·(j-1))`, so repeats count for progressively less;
 /// the result is the average per-play value, in ppm (`1_000_000` = full weight).
 /// `plays == 0` is treated as a single unit (`1_000_000`). Pure integer math, so it
-/// is bit-for-bit reproducible.
+/// is bit-for-bit reproducible. `plays` is clamped to [`PLAYS_CAP`] before the loop
+/// runs, so an adversarially large committed play count cannot blow up the work
+/// done here (or in [`allocate`], which calls this once per usage row).
 pub fn d_ppm(plays: u64, k_ppm: u64) -> u64 {
-    let v = plays.max(1);
+    let v = plays.clamp(1, PLAYS_CAP);
     // Σ term_j, each term scaled to ppm: term_j = 1e6 · 1e6 / (1e6 + k·(j-1)).
     let mut sum_ppm: u128 = 0;
     for j in 1..=v {
@@ -392,6 +409,17 @@ mod dr_tests {
         }
         // Deterministic across calls.
         assert_eq!(d_ppm(37, k), d_ppm(37, k));
+    }
+
+    /// An adversarially large play count is clamped to `PLAYS_CAP` before the
+    /// O(plays) loop runs: `d_ppm(u64::MAX, ..)` must match `d_ppm(PLAYS_CAP, ..)`
+    /// exactly, and — since this test completes at all — the loop never actually
+    /// iterated anywhere near `u64::MAX` times (the settlement-DoS this guards
+    /// against). Monotonicity is checked up to the cap in `diminishing_multiplier`.
+    #[test]
+    fn diminishing_multiplier_clamps_huge_play_counts() {
+        let k = 1_000_000;
+        assert_eq!(d_ppm(u64::MAX, k), d_ppm(PLAYS_CAP, k));
     }
 }
 
@@ -465,6 +493,25 @@ mod h3_tests {
         let p = allocate(&d, &DaprParams::default()).unwrap();
         assert_eq!(p.per_work["wA"], 250_000); // paid = fee · bw
         assert_eq!(p.unallocated, 750_000); // discounted remainder
+        assert_eq!(p.total_to_works() + p.unallocated, 1_000_000);
+    }
+
+    /// A `bandwidth_ppm` value above neutral (`1_000_000`) — a bug or bad
+    /// governance input — must clamp to neutral rather than inflate `cred` above
+    /// `raw`. Before the clamp this made `sum_cred > rw_u`, so `target > fee` and
+    /// `fee.checked_sub(target)` underflowed to `DaprError::Overflow`, failing the
+    /// whole epoch. Clamped, the row behaves exactly as if bandwidth were absent:
+    /// the full fee is paid, nothing is unallocated, and no error is raised.
+    #[test]
+    fn above_neutral_bandwidth_clamps_and_does_not_error() {
+        let mut d = ds(
+            &[("u1", 1_000_000)],
+            &[("u1", "wA", 60, 1_000_000, 1_000_000, 1)],
+        );
+        d.bandwidth_ppm.insert("wA".into(), 2_000_000); // double neutral: bogus input
+        let p = allocate(&d, &DaprParams::default()).unwrap();
+        assert_eq!(p.per_work["wA"], 1_000_000); // clamped to neutral: full fee, no inflation
+        assert_eq!(p.unallocated, 0);
         assert_eq!(p.total_to_works() + p.unallocated, 1_000_000);
     }
 
