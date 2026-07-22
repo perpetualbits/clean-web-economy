@@ -53,7 +53,10 @@ impl Session {
         }
     }
 
-    /// Persist the current state to `path` (atomically via the parent dir).
+    /// Persist the current state to `path` atomically (write to a sibling temp file,
+    /// then rename over the target). A crash mid-write cannot leave a half-written
+    /// (unparseable) state file; the next load either gets the old state or the new
+    /// one, never a corrupt file.
     pub fn save(&self, path: &Path) -> Result<(), SessionError> {
         let state = PlayerState {
             session: self.store.snapshot().clone(),
@@ -61,7 +64,12 @@ impl Session {
         };
         let json =
             serde_json::to_string_pretty(&state).map_err(|e| SessionError::Parse(e.to_string()))?;
-        std::fs::write(path, json + "\n").map_err(|e| SessionError::Io(e.to_string()))
+
+        // Write to a sibling temp file first, then rename over the target so a crash
+        // mid-write can never leave a half-written (unparseable) state file.
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, json + "\n").map_err(|e| SessionError::Io(e.to_string()))?;
+        std::fs::rename(&tmp, path).map_err(|e| SessionError::Io(e.to_string()))
     }
 
     /// Accrue `secs` of playback to `work_id`. When `fingerprint` is true the
@@ -153,5 +161,16 @@ mod tests {
         assert_eq!(escrow, vec![b(2)]);
         // After taking, the set is empty (a second take yields nothing).
         assert!(s.take_escrow_works().is_empty());
+    }
+
+    /// Loading a present-but-corrupt state file returns Parse error.
+    #[test]
+    fn load_corrupt_file_returns_parse_error() {
+        let path = std::env::temp_dir().join("cwe-player-sess-corrupt.json");
+        let _ = std::fs::remove_file(&path);
+        // Write corrupt (non-JSON) content to the file.
+        std::fs::write(&path, b"{ not json").unwrap();
+        let result = Session::load(&path, 0);
+        assert!(matches!(result, Err(SessionError::Parse(_))));
     }
 }
