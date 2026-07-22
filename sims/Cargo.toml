@@ -19,6 +19,7 @@ description = "DAPR payout-math reference implementation and simulator for the C
 serde.workspace = true         # (de)serialise usage rows and payout results
 serde_json.workspace = true    # emit the *_expected.json oracle consumed by WP5
 thiserror.workspace = true     # typed errors for malformed fixtures
+ruint = "1"                    # 256-bit intermediate for overflow-safe mul_div
 
 [[bin]]
 # The `simulate` binary loads a usage CSV, runs the reference math, and writes

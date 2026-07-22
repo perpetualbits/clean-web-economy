@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cwe_dapr::{allocate, Dataset, Payouts};
+use cwe_dapr::{allocate, DaprParams, Dataset, Payouts};
 
 /// Entry point. Returns a non-zero exit code on any error so the tool is usable
 /// as a CI gate rather than failing silently.
@@ -50,8 +50,9 @@ fn run(fixture_path: &Path) -> Result<PathBuf, String> {
     let dataset: Dataset = serde_json::from_str(&raw)
         .map_err(|e| format!("parsing {}: {e}", fixture_path.display()))?;
 
-    // Run the reference allocation.
-    let payouts = allocate(&dataset).map_err(|e| e.to_string())?;
+    // Run the reference allocation with the default (neutral) DAPR parameters;
+    // the simulator has no governance input to override them from.
+    let payouts = allocate(&dataset, &DaprParams::default()).map_err(|e| e.to_string())?;
 
     // Show the operator what happened before writing anything.
     print_summary(&dataset, &payouts);

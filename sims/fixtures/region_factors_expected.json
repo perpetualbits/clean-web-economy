@@ -3,5 +3,15 @@
     "wFull": 600000,
     "wHalf": 300000
   },
-  "unallocated": 0
+  "unallocated": 0,
+  "reputation": {
+    "wFull": {
+      "distinct_users": 1,
+      "weighted_usage": 100000000000000
+    },
+    "wHalf": {
+      "distinct_users": 1,
+      "weighted_usage": 50000000000000
+    }
+  }
 }

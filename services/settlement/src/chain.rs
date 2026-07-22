@@ -126,6 +126,8 @@ pub async fn run(cfg: &Config) -> Result<Settlement, BoxErr> {
                     minutes: opening.minutes,
                     price_ppm: u64::try_from(price)?,
                     region_ppm: 1_000_000,
+                    // TODO(H3 Task 2): carry the opening's real play count.
+                    plays: 1,
                 });
             }
         }
@@ -140,7 +142,17 @@ pub async fn run(cfg: &Config) -> Result<Settlement, BoxErr> {
         .collect();
 
     // Compute the settlement, split into direct (Merkle) and escrow buckets.
-    let settlement = settle(cfg.epoch, &Dataset { tier_fees, usage }, &escrow_works)?;
+    // Bandwidth credibility is not yet wired into the chain layer (H3 Task 2+),
+    // so every work is neutral for now.
+    let settlement = settle(
+        cfg.epoch,
+        &Dataset {
+            tier_fees,
+            usage,
+            bandwidth_ppm: BTreeMap::new(),
+        },
+        &escrow_works,
+    )?;
 
     // Commit the direct (signed) epoch root to CWEPayouts and wait for it to land.
     let pending = payouts

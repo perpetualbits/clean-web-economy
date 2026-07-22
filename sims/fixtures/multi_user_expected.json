@@ -8,5 +8,35 @@
     "wF": 111111,
     "wG": 111111
   },
-  "unallocated": 0
+  "unallocated": 0,
+  "reputation": {
+    "wA": {
+      "distinct_users": 3,
+      "weighted_usage": 350000000000000
+    },
+    "wB": {
+      "distinct_users": 2,
+      "weighted_usage": 80775000000000
+    },
+    "wC": {
+      "distinct_users": 2,
+      "weighted_usage": 82700000000000
+    },
+    "wD": {
+      "distinct_users": 1,
+      "weighted_usage": 35200000000000
+    },
+    "wE": {
+      "distinct_users": 2,
+      "weighted_usage": 19175000000000
+    },
+    "wF": {
+      "distinct_users": 1,
+      "weighted_usage": 3500000000000
+    },
+    "wG": {
+      "distinct_users": 1,
+      "weighted_usage": 3500000000000
+    }
+  }
 }

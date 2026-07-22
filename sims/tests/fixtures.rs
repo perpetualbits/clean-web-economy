@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use cwe_dapr::{allocate, Dataset, Payouts};
+use cwe_dapr::{allocate, DaprParams, Dataset, Payouts};
 
 /// Absolute path to the crate's `fixtures/` directory, resolved from the manifest
 /// dir so the test works regardless of the process's current directory.
@@ -52,7 +52,8 @@ fn load<T: serde::de::DeserializeOwned>(path: &PathBuf) -> T {
 fn every_fixture_conserves_fees() {
     for path in input_fixtures() {
         let dataset: Dataset = load(&path);
-        let payouts = allocate(&dataset).unwrap_or_else(|e| panic!("allocate {path:?}: {e}"));
+        let payouts = allocate(&dataset, &DaprParams::default())
+            .unwrap_or_else(|e| panic!("allocate {path:?}: {e}"));
         assert_eq!(
             payouts.total_to_works() + payouts.unallocated,
             dataset.total_fees(),
@@ -68,7 +69,8 @@ fn every_fixture_conserves_fees() {
 fn committed_oracles_match_fresh_computation() {
     for path in input_fixtures() {
         let dataset: Dataset = load(&path);
-        let fresh = allocate(&dataset).unwrap_or_else(|e| panic!("allocate {path:?}: {e}"));
+        let fresh = allocate(&dataset, &DaprParams::default())
+            .unwrap_or_else(|e| panic!("allocate {path:?}: {e}"));
 
         // Derive the sibling `<stem>_expected.json` path.
         let stem = path
@@ -93,7 +95,7 @@ fn committed_oracles_match_fresh_computation() {
 fn payout_maps_are_well_formed() {
     for path in input_fixtures() {
         let dataset: Dataset = load(&path);
-        let payouts = allocate(&dataset).unwrap();
+        let payouts = allocate(&dataset, &DaprParams::default()).unwrap();
         // Reconstruct which works had any positive value; each must appear iff it
         // received credit, and credited works must be a subset of used works.
         let used_works: BTreeMap<&String, ()> =

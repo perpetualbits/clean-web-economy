@@ -2,5 +2,15 @@
   "per_work": {
     "wA": 1000000
   },
-  "unallocated": 400000
+  "unallocated": 400000,
+  "reputation": {
+    "wA": {
+      "distinct_users": 1,
+      "weighted_usage": 60000000000000
+    },
+    "wB": {
+      "distinct_users": 1,
+      "weighted_usage": 0
+    }
+  }
 }

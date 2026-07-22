@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 use std::str::FromStr;
 
-use cwe_dapr::{allocate, DaprError, Dataset};
+use cwe_dapr::{allocate, DaprError, DaprParams, Dataset};
 use cwe_wallet_zk::Bytes32;
 use serde::{Deserialize, Serialize};
 
@@ -91,8 +91,10 @@ pub fn settle(
     dataset: &Dataset,
     escrow_works: &BTreeSet<String>,
 ) -> Result<Settlement, SettleError> {
-    // 1. Compute per-work credits with the shared payout math.
-    let payouts = allocate(dataset)?;
+    // 1. Compute per-work credits with the shared payout math. Governance
+    //    parameters are not yet plumbed through to settlement (H3 Task 2+), so
+    //    the neutral default (no diminishing-returns override) applies.
+    let payouts = allocate(dataset, &DaprParams::default())?;
 
     // A settlement with no credited works is a caller/config error (e.g. an epoch
     // with no usage); surface it rather than committing an empty root.
@@ -194,6 +196,7 @@ mod tests {
                     minutes: 60,
                     price_ppm: 1_000_000,
                     region_ppm: 1_000_000,
+                    plays: 1,
                 },
                 UsageRow {
                     user: "u1".to_string(),
@@ -201,8 +204,10 @@ mod tests {
                     minutes: 20,
                     price_ppm: 1_000_000,
                     region_ppm: 1_000_000,
+                    plays: 1,
                 },
             ],
+            bandwidth_ppm: BTreeMap::new(),
         }
     }
 
@@ -229,7 +234,7 @@ mod tests {
     #[test]
     fn settle_matches_dapr_allocation() {
         let ds = hex_dataset();
-        let expected = allocate(&ds).unwrap();
+        let expected = allocate(&ds, &DaprParams::default()).unwrap();
         let s = settle(3, &ds, &BTreeSet::new()).unwrap();
         for e in &s.entries {
             assert_eq!(

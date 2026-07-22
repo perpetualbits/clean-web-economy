@@ -1633,6 +1633,7 @@ dependencies = [
 name = "cwe-dapr"
 version = "0.1.0"
 dependencies = [
+ "ruint",
  "serde",
  "serde_json",
  "thiserror",

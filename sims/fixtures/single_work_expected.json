@@ -2,5 +2,11 @@
   "per_work": {
     "wONLY": 777777
   },
-  "unallocated": 0
+  "unallocated": 0,
+  "reputation": {
+    "wONLY": {
+      "distinct_users": 1,
+      "weighted_usage": 42000000000000
+    }
+  }
 }

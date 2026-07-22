@@ -4,5 +4,19 @@
     "wB": 111111,
     "wC": 944056
   },
-  "unallocated": 0
+  "unallocated": 0,
+  "reputation": {
+    "wA": {
+      "distinct_users": 2,
+      "weighted_usage": 156000000000000
+    },
+    "wB": {
+      "distinct_users": 1,
+      "weighted_usage": 18000000000000
+    },
+    "wC": {
+      "distinct_users": 1,
+      "weighted_usage": 202500000000000
+    }
+  }
 }
