@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **Rust everywhere** (this crate is native Rust; no C/JS in the MVP).
-- **No mention of Claude/AI/any agent** anywhere — code, comments, docs, commit messages, branch/PR text. Hard rule.
+- **No attribution to any coding agent, assistant, or automated tool** anywhere — code, comments, docs, commit messages, branch/PR text. Hard rule.
 - **Every function has a `///` doc block**; every non-trivial line gets an inline comment **only where it adds understanding**, never noise.
 - **Reuse, don't rebuild:** fingerprint via `cwe_fingerprint::Fingerprint::compute(&[f32], u32)`; content id via `Bytes32(cwe_wallet_zk::keccak256(bytes))`; commitments via `cwe_wallet_zk::commit::Opening::new(work, minutes, salt).commit()`; accrual via `cwe_wallet_zk::session::SessionStore`.
 - **Disclosure JSON must match the settlement job byte-for-byte:** shape is `{ "users": { "<addr lowercase>": [Opening…] }, "escrow_works": [Bytes32…] }`, using `cwe_wallet_zk::commit::Opening`'s own serde so the fields (`work_id`, `minutes`, `salt`) match `services/settlement/src/disclosure.rs`.
@@ -1505,7 +1505,7 @@ Create `clients/player-plugin/README.md`: what `cwe-player` is; the three (four,
 Run: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && ( cd chain && forge test ) && make -C ops player-demo`
 Expected: all green; demo passes.
 
-Scan for stray AI mentions in every new/changed file, then:
+Scan for stray agent/assistant attributions in every new/changed file, then:
 
 ```bash
 git add clients/player-plugin/ ops/demo/run_player_demo.sh ops/Makefile .github/workflows/ci.yml
