@@ -145,11 +145,11 @@ step "5. Listener subscribes and plays the fraudster's copy; settlement escrows 
 send $U2 $TIERS "subscribe(bytes32)" $LIGHT --value $FEE
 echo "  payout pool: $(cast to-unit $(bal $PAY) ether) ETH"
 
-# A usage commitment is keccak256(workId || minutes_be32 || salt) — the opening
-# the disclosure reveals below.
-commit() { cast keccak $(cast concat-hex "$1" $(cast to-uint256 "$2") "$3"); }
+# A usage commitment is keccak256(workId || minutes_be32 || plays_be32 || salt)
+# — the opening the disclosure reveals below.
+commit() { cast keccak $(cast concat-hex "$1" $(cast to-uint256 "$2") $(cast to-uint256 "$3") "$4"); }
 SALT=0x$(printf '33%.0s' {1..32})
-C=$(commit $WORK_FRAUD 60 $SALT)
+C=$(commit $WORK_FRAUD 60 1 $SALT)
 send $U2 $CONS "submitConsumption(bytes32,bytes32[],bytes)" $LIGHT "[$C]" 0x
 EPOCH=$(cast call --rpc-url $RPC $CONS "currentEpoch()(uint256)")
 echo "  epoch = $EPOCH"
@@ -159,7 +159,7 @@ echo "  epoch = $EPOCH"
 DISC="$WORKDIR/disclosure.json"
 cat > "$DISC" <<JSON
 { "users": {
-  "${U2_ADDR,,}": [ { "work_id": "$WORK_FRAUD", "minutes": 60, "salt": "$SALT" } ]
+  "${U2_ADDR,,}": [ { "work_id": "$WORK_FRAUD", "minutes": 60, "plays": 1, "salt": "$SALT" } ]
 },
   "escrow_works": [ "$WORK_FRAUD" ]
 }

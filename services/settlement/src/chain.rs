@@ -126,8 +126,9 @@ pub async fn run(cfg: &Config) -> Result<Settlement, BoxErr> {
                     minutes: opening.minutes,
                     price_ppm: u64::try_from(price)?,
                     region_ppm: 1_000_000,
-                    // TODO(H3 Task 2): carry the opening's real play count.
-                    plays: 1,
+                    // The opening's commitment binds `plays`, so this is exactly
+                    // what the user committed to on-chain, not a stand-in value.
+                    plays: opening.plays,
                 });
             }
         }

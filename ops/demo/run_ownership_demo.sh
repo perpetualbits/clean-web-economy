@@ -166,12 +166,13 @@ send $U1 $TIERS "subscribe(bytes32)" $LIGHT --value $FEE
 send $U2 $TIERS "subscribe(bytes32)" $LIGHT --value $FEE
 echo "  payout pool: $(cast to-unit $(bal $PAY) ether) ETH"
 
-# A usage commitment is keccak256(workId || minutes_be32 || salt) — the opening
-# the disclosure reveals below. Each listener plays their work for 60 minutes.
-commit() { cast keccak $(cast concat-hex "$1" $(cast to-uint256 "$2") "$3"); }
+# A usage commitment is keccak256(workId || minutes_be32 || plays_be32 || salt)
+# — the opening the disclosure reveals below. Each listener plays their work
+# for 60 minutes, a single play.
+commit() { cast keccak $(cast concat-hex "$1" $(cast to-uint256 "$2") $(cast to-uint256 "$3") "$4"); }
 SALT1=0x$(printf '11%.0s' {1..32}); SALT2=0x$(printf '22%.0s' {1..32})
-C1=$(commit $WORK_REAL 60 $SALT1)     # U1 -> real (signed)
-C2=$(commit $WORK_FRAUD 60 $SALT2)    # U2 -> fraud (unsigned/fingerprint)
+C1=$(commit $WORK_REAL 60 1 $SALT1)     # U1 -> real (signed)
+C2=$(commit $WORK_FRAUD 60 1 $SALT2)    # U2 -> fraud (unsigned/fingerprint)
 send $U1 $CONS "submitConsumption(bytes32,bytes32[],bytes)" $LIGHT "[$C1]" 0x
 send $U2 $CONS "submitConsumption(bytes32,bytes32[],bytes)" $LIGHT "[$C2]" 0x
 EPOCH=$(cast call --rpc-url $RPC $CONS "currentEpoch()(uint256)")
@@ -183,8 +184,8 @@ echo "  epoch = $EPOCH"
 DISC="$WORKDIR/disclosure.json"
 cat > "$DISC" <<JSON
 { "users": {
-  "${U1_ADDR,,}": [ { "work_id": "$WORK_REAL", "minutes": 60, "salt": "$SALT1" } ],
-  "${U2_ADDR,,}": [ { "work_id": "$WORK_FRAUD", "minutes": 60, "salt": "$SALT2" } ]
+  "${U1_ADDR,,}": [ { "work_id": "$WORK_REAL", "minutes": 60, "plays": 1, "salt": "$SALT1" } ],
+  "${U2_ADDR,,}": [ { "work_id": "$WORK_FRAUD", "minutes": 60, "plays": 1, "salt": "$SALT2" } ]
 },
   "escrow_works": [ "$WORK_FRAUD" ]
 }

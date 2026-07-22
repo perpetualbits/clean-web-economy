@@ -149,7 +149,7 @@ async function handleSettle() {
   await ensureReady();
   const cfg = await getConfig();
 
-  // Drain the epoch's usage: [{ work_id, minutes }, ...].
+  // Drain the epoch's usage: [{ work_id, minutes, plays }, ...].
   const usage = JSON.parse(session.flush());
   if (usage.length === 0) return { ok: false, error: "no usage accrued this epoch" };
 
@@ -157,11 +157,11 @@ async function handleSettle() {
   const commitments = [];
   const openings = [];
   for (const u of usage) {
-    // A fresh random 32-byte salt hides the minutes and binds the commitment.
+    // A fresh random 32-byte salt hides the minutes/plays and binds the commitment.
     const saltBytes = crypto.getRandomValues(new Uint8Array(32));
     const salt = "0x" + [...saltBytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-    commitments.push(commitment(u.work_id, u.minutes, salt));
-    openings.push({ work_id: u.work_id, minutes: u.minutes, salt });
+    commitments.push(commitment(u.work_id, u.minutes, u.plays, salt));
+    openings.push({ work_id: u.work_id, minutes: u.minutes, plays: u.plays, salt });
   }
 
   // Persist the flushed (now empty) session and the openings for export.

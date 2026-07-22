@@ -14,13 +14,15 @@ use crate::Bytes32;
 /// The scheme tag carried by every Phase 1 placeholder proof.
 pub const PLACEHOLDER_SCHEME: &str = "none-v0";
 
-/// One work's usage: which work, and how many minutes.
+/// One work's usage: which work, how many minutes, and how many plays.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct UsageEntry {
     /// The work consumed.
     pub work_id: Bytes32,
     /// Minutes of usage.
     pub minutes: u64,
+    /// Number of plays of the work within the epoch.
+    pub plays: u64,
 }
 
 /// A usage proof. In Phase 1 this carries no cryptographic content — only the
@@ -78,10 +80,12 @@ mod tests {
             UsageEntry {
                 work_id: b32(1),
                 minutes: 30,
+                plays: 1,
             },
             UsageEntry {
                 work_id: b32(2),
                 minutes: 12,
+                plays: 1,
             },
         ];
         let proof = generate_proof(&usage);
@@ -94,17 +98,19 @@ mod tests {
     #[test]
     fn verify_checks_scheme_and_count() {
         let commitments: Vec<Commitment> = vec![
-            Opening::new(b32(1), 30, b32(9)).commit(),
-            Opening::new(b32(2), 12, b32(9)).commit(),
+            Opening::new(b32(1), 30, 1, b32(9)).commit(),
+            Opening::new(b32(2), 12, 1, b32(9)).commit(),
         ];
         let good = generate_proof(&[
             UsageEntry {
                 work_id: b32(1),
                 minutes: 30,
+                plays: 1,
             },
             UsageEntry {
                 work_id: b32(2),
                 minutes: 12,
+                plays: 1,
             },
         ]);
         assert!(verify_proof(&commitments, &good));
@@ -113,6 +119,7 @@ mod tests {
         let bad = generate_proof(&[UsageEntry {
             work_id: b32(1),
             minutes: 30,
+            plays: 1,
         }]);
         assert!(!verify_proof(&commitments, &bad));
 

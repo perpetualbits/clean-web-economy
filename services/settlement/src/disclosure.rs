@@ -63,7 +63,7 @@ mod tests {
         let mut d = Disclosure::default();
         d.users.insert(
             "0xabc".to_string(),
-            vec![Opening::new(Bytes32([1; 32]), 30, Bytes32([2; 32]))],
+            vec![Opening::new(Bytes32([1; 32]), 30, 1, Bytes32([2; 32]))],
         );
         let json = serde_json::to_string(&d).unwrap();
         let back: Disclosure = serde_json::from_str(&json).unwrap();

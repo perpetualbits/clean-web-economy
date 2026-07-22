@@ -37,6 +37,9 @@ pub struct SessionState {
     pub epoch: u64,
     /// Accrued seconds per work for the current epoch.
     pub per_work_secs: BTreeMap<Bytes32, u64>,
+    /// Number of `start`s recorded per work for the current epoch — one per play.
+    #[serde(default)]
+    pub per_work_plays: BTreeMap<Bytes32, u64>,
     /// Open sessions: session id → the work it is accruing to.
     pub active: BTreeMap<String, Bytes32>,
 }
@@ -77,9 +80,13 @@ impl SessionStore {
     /// Open a session accruing to `work_id`.
     ///
     /// Re-using a session id simply repoints it at the (possibly new) work; time
-    /// added afterwards accrues to that work.
+    /// added afterwards accrues to that work. Each call counts as one play of
+    /// `work_id`, so the play count reflects how many times playback started,
+    /// independent of how long each playback lasted.
     pub fn start(&mut self, session_id: impl Into<String>, work_id: Bytes32) {
         self.state.active.insert(session_id.into(), work_id);
+        let plays = self.state.per_work_plays.entry(work_id).or_insert(0);
+        *plays = plays.saturating_add(1);
     }
 
     /// Add `dt_secs` of elapsed time to an open session's work.
@@ -106,24 +113,34 @@ impl SessionStore {
         self.state.active.remove(session_id).is_some()
     }
 
-    /// Drain the epoch's accrued time into whole-minute usage entries.
+    /// Drain the epoch's accrued time and play counts into whole-minute usage
+    /// entries.
     ///
     /// Seconds are floored to minutes; works with less than a full minute of
-    /// accrued time are dropped (they round to zero). The per-work accumulator is
-    /// cleared, but open sessions are kept so accrual continues into the next
-    /// epoch. Entries come out ordered by work id (from the `BTreeMap`), giving
-    /// deterministic, reproducible output.
+    /// accrued time are dropped (they round to zero), and their play count is
+    /// dropped along with them. Both the per-work seconds and per-work play
+    /// accumulators are cleared, but open sessions are kept so accrual continues
+    /// into the next epoch. Entries come out ordered by work id (from the
+    /// `BTreeMap`), giving deterministic, reproducible output.
     pub fn flush(&mut self) -> Vec<UsageEntry> {
-        // Take the accumulator, leaving an empty map behind for the next epoch.
-        let drained = std::mem::take(&mut self.state.per_work_secs);
-        drained
+        // Take both accumulators, leaving empty maps behind for the next epoch.
+        let drained_secs = std::mem::take(&mut self.state.per_work_secs);
+        let mut drained_plays = std::mem::take(&mut self.state.per_work_plays);
+        drained_secs
             .into_iter()
             .filter_map(|(work_id, secs)| {
                 let minutes = secs / 60; // floor seconds to whole minutes
                 if minutes == 0 {
                     None // sub-minute usage contributes nothing this epoch
                 } else {
-                    Some(UsageEntry { work_id, minutes })
+                    // Every work with accrued seconds was `start`ed at least once,
+                    // so this always finds a count; default to 0 defensively.
+                    let plays = drained_plays.remove(&work_id).unwrap_or(0);
+                    Some(UsageEntry {
+                        work_id,
+                        minutes,
+                        plays,
+                    })
                 }
             })
             .collect()
@@ -146,7 +163,8 @@ mod tests {
         assert_eq!(epoch_of(EPOCH_LENGTH_SECS), 1);
     }
 
-    /// Time accrues to the session's work and flushes as floored minutes.
+    /// Time accrues to the session's work and flushes as floored minutes, with a
+    /// single `start` counting as one play.
     #[test]
     fn accrue_and_flush() {
         let mut store = SessionStore::new(0);
@@ -158,6 +176,7 @@ mod tests {
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].work_id, b32(0xA));
         assert_eq!(usage[0].minutes, 2); // 130 s floors to 2 minutes
+        assert_eq!(usage[0].plays, 1); // one start of the session
     }
 
     /// Two sessions on the same work accumulate into one entry.
@@ -171,6 +190,26 @@ mod tests {
         let usage = store.flush();
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].minutes, 2); // 120 s total
+    }
+
+    /// Two `start`s on the same work count as two plays; minutes still floor
+    /// correctly on the shared accrued seconds.
+    #[test]
+    fn two_starts_on_same_work_count_two_plays() {
+        let mut store = SessionStore::new(0);
+        store.start("s1", b32(0xA));
+        store.add_time("s1", 60);
+        store.stop("s1");
+        // A second playback of the same work, e.g. a replay.
+        store.start("s1", b32(0xA));
+        store.add_time("s1", 90);
+        store.stop("s1");
+
+        let usage = store.flush();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].work_id, b32(0xA));
+        assert_eq!(usage[0].minutes, 2); // 150 s total floors to 2 minutes
+        assert_eq!(usage[0].plays, 2); // two starts of the same work
     }
 
     /// Sub-minute usage rounds to zero and is dropped from the flush.

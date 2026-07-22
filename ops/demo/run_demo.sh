@@ -102,12 +102,14 @@ echo "payout pool: $(cast to-unit $(cast balance --rpc-url $RPC $PAY) ether) ETH
 
 # --- step 4: submit consumption --------------------------------------------
 step "4. Users submit usage commitments"
-commit() { cast keccak $(cast concat-hex "$1" $(cast to-uint256 "$2") "$3"); }
+# A usage commitment is keccak256(work_id || minutes_be32 || plays_be32 || salt).
+commit() { cast keccak $(cast concat-hex "$1" $(cast to-uint256 "$2") $(cast to-uint256 "$3") "$4"); }
 SALT1A=0x$(printf '11%.0s' {1..32}); SALT1B=0x$(printf '12%.0s' {1..32})
 SALT2A=0x$(printf '21%.0s' {1..32}); SALT2C=0x$(printf '23%.0s' {1..32})
-# user1 listens workA 60min, workB 20min; user2 listens workA 30min, workC 90min.
-C1A=$(commit $WORK_A 60 $SALT1A); C1B=$(commit $WORK_B 20 $SALT1B)
-C2A=$(commit $WORK_A 30 $SALT2A); C2C=$(commit $WORK_C 90 $SALT2C)
+# user1 listens workA 60min (1 play), workB 20min (1 play);
+# user2 listens workA 30min (1 play), workC 90min (1 play).
+C1A=$(commit $WORK_A 60 1 $SALT1A); C1B=$(commit $WORK_B 20 1 $SALT1B)
+C2A=$(commit $WORK_A 30 1 $SALT2A); C2C=$(commit $WORK_C 90 1 $SALT2C)
 send $U1 $CONS "submitConsumption(bytes32,bytes32[],bytes)" $LIGHT "[$C1A,$C1B]" 0x
 send $U2 $CONS "submitConsumption(bytes32,bytes32[],bytes)" $LIGHT "[$C2A,$C2C]" 0x
 EPOCH=$(cast call --rpc-url $RPC $CONS "currentEpoch()(uint256)")
@@ -118,12 +120,12 @@ DISC="$WORKDIR/disclosure.json"
 cat > "$DISC" <<JSON
 { "users": {
   "${U1_ADDR,,}": [
-    { "work_id": "$WORK_A", "minutes": 60, "salt": "$SALT1A" },
-    { "work_id": "$WORK_B", "minutes": 20, "salt": "$SALT1B" }
+    { "work_id": "$WORK_A", "minutes": 60, "plays": 1, "salt": "$SALT1A" },
+    { "work_id": "$WORK_B", "minutes": 20, "plays": 1, "salt": "$SALT1B" }
   ],
   "${U2_ADDR,,}": [
-    { "work_id": "$WORK_A", "minutes": 30, "salt": "$SALT2A" },
-    { "work_id": "$WORK_C", "minutes": 90, "salt": "$SALT2C" }
+    { "work_id": "$WORK_A", "minutes": 30, "plays": 1, "salt": "$SALT2A" },
+    { "work_id": "$WORK_C", "minutes": 90, "plays": 1, "salt": "$SALT2C" }
   ]
 } }
 JSON

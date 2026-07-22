@@ -49,9 +49,9 @@ pub fn build_openings(usage: &[UsageEntry], salt_fn: impl Fn(usize) -> Bytes32) 
     usage
         .iter()
         .enumerate()
-        // Each opening binds work + minutes + a hiding salt; its commitment is
-        // what goes on-chain, the opening itself into the disclosure.
-        .map(|(i, u)| Opening::new(u.work_id, u.minutes, salt_fn(i)))
+        // Each opening binds work + minutes + plays + a hiding salt; its
+        // commitment is what goes on-chain, the opening itself into the disclosure.
+        .map(|(i, u)| Opening::new(u.work_id, u.minutes, u.plays, salt_fn(i)))
         .collect()
 }
 
@@ -163,13 +163,15 @@ mod tests {
         let usage = vec![UsageEntry {
             work_id: Bytes32([7; 32]),
             minutes: 4,
+            plays: 2,
         }];
         // A fixed salt makes the commitment deterministic for the assertion.
         let salt = Bytes32([9; 32]);
         let openings = build_openings(&usage, |_| salt);
         assert_eq!(openings.len(), 1);
         assert_eq!(openings[0].minutes, 4);
-        let expected = Opening::new(Bytes32([7; 32]), 4, salt).commit();
+        assert_eq!(openings[0].plays, 2);
+        let expected = Opening::new(Bytes32([7; 32]), 4, 2, salt).commit();
         assert_eq!(openings[0].commit(), expected);
     }
 
@@ -192,13 +194,14 @@ mod tests {
         let dir = std::env::temp_dir().join("cwe-player-settle-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("disclosure.json");
-        let openings = vec![Opening::new(Bytes32([7; 32]), 4, Bytes32([9; 32]))];
+        let openings = vec![Opening::new(Bytes32([7; 32]), 4, 2, Bytes32([9; 32]))];
         write_disclosure(&path, "0xABC", &openings, &[Bytes32([2; 32])]).unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        // Keyed by the lowercased user address; opening carries work_id/minutes/salt.
+        // Keyed by the lowercased user address; opening carries work_id/minutes/plays/salt.
         assert!(v["users"]["0xabc"].is_array());
         assert_eq!(v["users"]["0xabc"][0]["minutes"], 4);
+        assert_eq!(v["users"]["0xabc"][0]["plays"], 2);
         assert!(v["users"]["0xabc"][0]["work_id"].is_string());
         assert!(v["users"]["0xabc"][0]["salt"].is_string());
         // escrow_works lists the fingerprint-recognised works.
