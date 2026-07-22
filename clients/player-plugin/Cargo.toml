@@ -29,6 +29,8 @@ alloy = { version = "2", features = ["full"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # Fresh 32-byte salts for commitments.
 rand = "0.8"
+# The RPC URL parse error type surfaced by `settle::SettleError::Rpc`.
+url = "2"
 
 serde.workspace = true
 serde_json.workspace = true

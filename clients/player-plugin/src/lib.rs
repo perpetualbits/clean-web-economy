@@ -8,6 +8,7 @@ pub mod decode;
 pub mod policy;
 pub mod recognize;
 pub mod session;
+pub mod settle;
 
 /// The crate-wide error type surfaced by the CLI.
 #[derive(Debug, thiserror::Error)]
@@ -21,4 +22,7 @@ pub enum PlayerError {
     /// A session state problem.
     #[error(transparent)]
     Session(#[from] session::SessionError),
+    /// A settlement (commitment/disclosure/on-chain submit) problem.
+    #[error(transparent)]
+    Settle(#[from] settle::SettleError),
 }
