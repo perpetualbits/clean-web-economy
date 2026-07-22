@@ -26,3 +26,10 @@ ruint = "1"                    # 256-bit intermediate for overflow-safe mul_div
 # the canonical expected-output JSON used as the cross-check oracle in WP5.
 name = "simulate"
 path = "src/bin/simulate.rs"
+
+[[bin]]
+# The `antifraud_demo` binary is a self-contained, deterministic proof of the
+# H3 anti-fraud properties (capped fraud, bandwidth-discount loss, honest
+# fairness) — pure Rust, no fixtures or chain required.
+name = "antifraud_demo"
+path = "src/bin/antifraud_demo.rs"

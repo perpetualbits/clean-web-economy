@@ -249,3 +249,24 @@ jobs:
 
       - name: Run the demo
         run: make -C ops arbitration-demo
+
+  # ---------------------------------------------------------------------------
+  # Anti-fraud demo: a deterministic proof of the DAPR model's core anti-fraud
+  # properties — puppet plays are capped to break-even (never a profit),
+  # bandwidth-discredited plays are a strict loss whose shortfall is conserved
+  # into `unallocated`, and honest single-work fandom plus broad-appeal works
+  # are never penalized. Pure Rust over `cwe-dapr`, so unlike the demos above
+  # it needs no Foundry, Anvil, or jq — just the Cargo toolchain.
+  # ---------------------------------------------------------------------------
+  antifraud-e2e:
+    name: Anti-fraud demo (DAPR model)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run the demo
+        run: make -C ops antifraud-demo

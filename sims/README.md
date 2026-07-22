@@ -1,25 +1,86 @@
 # DAPR simulator (`cwe-dapr`)
 
-Reference implementation of the Phase 1 payout math: how a subscription period's
-tier fees become per-work creator payouts. This crate is the **single source of
+Reference implementation of the payout math: how a subscription period's tier
+fees become per-work creator payouts. This crate is the **single source of
 truth** — WP5's on-chain settlement job links the very same code, so the
 simulator and the real settlement cannot disagree numerically.
 
-## The formula (Phase 1 scope)
+## The formula (H3: user-centric anti-fraud model)
 
-Each user's paid tier fee is split across the works they listened to, in
-proportion to a per-row *value*:
+Each user's paid tier fee is split across the works they consumed, in
+proportion to a per-row value that is discounted twice — once for repeat plays
+of the same work, once for the bandwidth layer's credibility signal — before
+being shrunk to a *bandwidth-free* total and apportioned exactly:
 
 ```
-value_i   = minutes_i · price_ppm_i · region_ppm_i     # one usage row's weight
-D_user    = Σ_i value_i   over that user's rows          # the user's total value
-credit_i  = tier_fee_user · value_i / D_user             # that row's share of the fee
-payout_w  = Σ credit_i    over all rows for work w        # summed across all users
+value_i   = minutes_i · price_ppm_i · region_ppm_i    # one usage row's weight
+raw_i     = value_i · D(plays_i)                      # diminishing-returns discount
+cred_i    = raw_i · bandwidth_ppm(work_i)              # bandwidth-credibility discount
+RW_user   = Σ_i raw_i           over that user's rows    # bandwidth-FREE denominator
+target    = tier_fee_user · (Σ cred_i / RW_user)       # ≤ tier_fee_user
+credit_i  = target · cred_i / Σ cred_i                 # that row's share of `target`
+payout_w  = Σ credit_i          over all rows for work w  # summed across all users
 ```
 
-The richer DAPR model — bandwidth credibility, per-user diminishing returns, the
-α/β exponents in `docs/specs/DAPR_usage_aggregation_protocol.md` §7–8 — is
-**out of Phase 1 scope**. Only the weighted split above is implemented.
+See `sims/src/lib.rs` (`allocate`, `d_ppm`, `Dataset::bw`) for the exact
+implementation; the module doc there is the authoritative derivation.
+
+### User-centric split
+
+The fee is apportioned per user, over *that user's own rows only* — one user's
+listening never dilutes or inflates another user's payout. This is what makes
+the model composable: a puppet account's behavior only ever affects the fee
+that puppet itself paid in.
+
+### Diminishing returns (`k`)
+
+Repeat plays of the *same* work by the *same* user are worth progressively
+less: the `j`-th play counts for `1/(1 + k·(j-1))` of the first, governed by
+the tunable `DaprParams::diminishing_k_ppm` (default `k = 1.0`, i.e. `1/j`).
+This only ever reshapes how one user's fee splits **across multiple works** —
+a single-work user's total contribution to that one work is unaffected by
+`plays` at all, because the discount appears in both the numerator (`cred`)
+and the bandwidth-free denominator (`RW_user`) and cancels. That cancellation
+is deliberate: it is what keeps heavy, honest replay of one favorite work
+(a superfan) from ever being penalized.
+
+### Bandwidth-credibility discount + neutral default
+
+`bandwidth_ppm(work)` — supplied by the bandwidth layer, clamped to
+`[0, 1_000_000]` — scales `cred` but not `RW_user`. Because the denominator
+stays bandwidth-free, a discredited work's share of `target` shrinks below the
+user's full fee rather than merely being redistributed to other works: the
+shortfall becomes `unallocated`, a real loss to whoever is farming the fake
+plays. A work absent from `bandwidth_ppm` defaults to `1_000_000` (fully
+credible) — the neutral value that reproduces every pre-H3 fixture bit for
+bit, since no fixture supplies bandwidth data.
+
+### The reputation signal
+
+Alongside the payout, `allocate` returns a `Reputation` per work —
+`distinct_users` (breadth) and `weighted_usage` (the same bandwidth- and
+diminishing-adjusted `cred` used for payout, summed instead of apportioned).
+It is purely informational: it never changes how much a work is paid, only
+how discovery might rank or surface it. It is built to reward broad appeal
+(many distinct listeners) over one listener grinding a play counter.
+
+### Deferred seams
+
+- **Real bandwidth receipts (H5).** `bandwidth_ppm` is an input this crate
+  trusts; nothing here verifies it. H5 is expected to populate it from actual
+  bandwidth/delivery receipts rather than the neutral default used today.
+- **Reputation into hub ranking (fast-follow).** `Reputation` is computed and
+  returned but not yet consumed anywhere — wiring it into the Discovery Hub's
+  ranking is deliberately out of scope for this task.
+- **Governance influence exponent.** `docs/specs/DAPR_usage_aggregation_protocol.md`
+  §7–8 describes further α/β exponents beyond `diminishing_k_ppm`; only the
+  diminishing-returns rate is a tunable `DaprParams` field today.
+
+See `sims/src/bin/antifraud_demo.rs` (`make -C ops antifraud-demo`) for a
+deterministic, hand-checked demonstration of the anti-fraud properties this
+model is meant to guarantee: fraud is capped to break-even, discredited plays
+are a strict loss (conserved to `unallocated`, not merely redistributed), and
+honest single-work and broad-appeal usage are never penalized.
 
 ## Exact integer math
 
