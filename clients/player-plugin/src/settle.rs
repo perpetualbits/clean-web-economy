@@ -37,7 +37,9 @@ sol! {
 pub struct Disclosure {
     /// Openings keyed by the submitting user's address.
     pub users: BTreeMap<String, Vec<Opening>>,
-    /// Works recognised via fingerprint (Tier 2) — routed to escrow.
+    /// Works recognised via fingerprint (Tier 2) — routed to escrow. `default`
+    /// mirrors the settlement crate's field so an absent key deserialises equally.
+    #[serde(default)]
     pub escrow_works: Vec<Bytes32>,
 }
 
