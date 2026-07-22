@@ -218,6 +218,11 @@ A pending dispute freezes money, so the design bounds the harm:
   can `resolveDispute`. Funds cannot be locked indefinitely by an ignored dispute.
 - **Deferred:** a filing bond (slashed for a frivolous challenge) — the natural next
   guard, deferred with the staked-court money mechanics.
+- **Bounded re-challenge:** after an incumbent-keep verdict the dispute clears, so if
+  the escrow's own 30-day challenge window is still open (a 21-day vote fits inside
+  it) the escrow can be challenged again, delaying release by up to another window.
+  This is bounded (no new challenge is possible once `currentEpoch() >= releaseEpoch`)
+  and never a permanent freeze — acceptable for the MVP.
 
 Timing: `challenge` must still fall within the escrow's challenge window
 (`currentEpoch() < releaseEpoch`, per the H1 commit-time fix). The vote runs for

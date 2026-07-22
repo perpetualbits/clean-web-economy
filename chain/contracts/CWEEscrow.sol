@@ -229,7 +229,14 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
 
             Escrow storage to = _escrows[epochId][challengerWork];
             to.amount += amount;
-            to.releaseEpoch = releaseEpoch;
+            // Keep the LATER release epoch. If the challenger slot already held
+            // its own committed escrow, overwriting with an earlier epoch would
+            // let its funds (and challenge window) mature sooner than committed;
+            // taking the max can only ever extend, never shorten, either work's
+            // anti-fraud window. A fresh slot's epoch is 0, so this sets it.
+            if (releaseEpoch > to.releaseEpoch) {
+                to.releaseEpoch = releaseEpoch;
+            }
             to.contentId = contentId;
             to.committed = true;
             // The challenger's OWN escrow for this (epoch, work) may already have
@@ -245,7 +252,9 @@ contract CWEEscrow is ICWEEscrow, ReentrancyGuard {
             // dispute-winning challenger's payees; if the slot was never
             // released this is a harmless no-op (it is already false).
             to.released = false;
-            // to.disputeId stays 0: the new holder is undisputed and releasable.
+            // We do not touch `to.disputeId`: if the challenger slot carries its
+            // own open dispute the merged funds correctly stay locked under it;
+            // otherwise it is already 0 and the new holder is releasable.
             emit DisputeResolved(epochId, escrowedWork, challengerWork, disputeId);
         } else {
             // Incumbent keeps the escrow; clear the dispute so it can release.
