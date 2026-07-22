@@ -31,10 +31,10 @@ use std::process::ExitCode;
 use cwe_dapr::{allocate, DaprParams, Dataset, UsageRow};
 
 /// Entry point: run every scenario in turn, printing a line per assertion.
-/// Returns [`ExitCode::FAILURE`] if any scenario calls [`std::process::exit`]
-/// itself (see [`check`]); otherwise prints the final banner and returns
-/// success. A `main` that reaches its own end has, by construction, passed
-/// every check along the way.
+/// A failed assertion terminates the process immediately with a non-zero code
+/// via [`check`] (`std::process::exit(1)`), so `main` only ever reaches its own
+/// end — printing the final banner and returning [`ExitCode::SUCCESS`] — when
+/// every check has passed.
 fn main() -> ExitCode {
     println!("Anti-fraud demo (H3 DAPR model)");
     println!();
