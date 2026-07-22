@@ -101,6 +101,7 @@ impl ReqwestTransport {
 }
 
 impl Default for ReqwestTransport {
+    /// Delegates to [`ReqwestTransport::new`] (a default blocking client).
     fn default() -> Self {
         Self::new()
     }
