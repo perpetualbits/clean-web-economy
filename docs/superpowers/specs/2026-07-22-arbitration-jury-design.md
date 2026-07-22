@@ -79,9 +79,10 @@ The jury contract is the swappable seam where the judgment layer plugs in.
 ### Contracts
 
 - **`chain/contracts/CWEJury.sol`** (new) — implements the dispute lifecycle and the
-  committee. Holds references to `CWERegistry` (for the fallback) and the
-  `EarliestRegistrationArbiter` (`IArbiter`), an `owner`, a juror allowlist, and the
-  authorised `escrow` address (only it may open disputes).
+  committee. Holds an `owner`, a juror allowlist, an `IArbiter fallbackArbiter` (the
+  existing `EarliestRegistrationArbiter`, which already reads the registry for the
+  earliest-registration default — so the jury needs no direct registry reference),
+  and the authorised `escrow` address (only it may open disputes).
 - **`chain/contracts/interfaces/IJury.sol`** (new) — the minimal surface `CWEEscrow`
   depends on: `openDispute`, `isResolved`, `verdictOf`.
 - **`chain/contracts/CWEEscrow.sol`** (modified) — its `IArbiter arbiter` becomes
@@ -106,9 +107,8 @@ interface IJury {
 
 ### `CWEJury` (the committee)
 
-State: `owner`; `mapping(address => bool) isJuror`; `ICWERegistry registry`;
-`IArbiter fallbackArbiter`; `address escrow`; `uint256 nextDisputeId`; and per
-dispute a record:
+State: `owner`; `mapping(address => bool) isJuror`; `IArbiter fallbackArbiter`;
+`address escrow`; `uint256 nextDisputeId`; and per dispute a record:
 
 ```solidity
 struct Dispute {
@@ -138,8 +138,12 @@ Functions:
   and `verdict`.
 - `isResolved` / `verdictOf` — the `IJury` views.
 
-`VOTING_WINDOW` is a public constant (a stub value, e.g. `3 days`), short relative to
-the 30-day escrow epoch, and easy to warp past in tests/demos.
+`VOTING_WINDOW` is a public constant, **`21 days` (3 weeks) minimum**. This is a
+floor, not a convenience value: real jurors need time to align schedules across
+weekends and to gather evidence, so anything shorter would just force the
+earliest-registration fallback in practice. It still sits inside the escrow's money
+lifecycle (release is gated on the dispute clearing, not on the 30-day epoch), and
+tests/demos warp past it.
 
 ### `CWEEscrow` changes
 
