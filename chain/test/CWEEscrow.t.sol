@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {CWEEscrow} from "../contracts/CWEEscrow.sol";
 import {CWERegistry} from "../contracts/CWERegistry.sol";
 import {EarliestRegistrationArbiter} from "../contracts/EarliestRegistrationArbiter.sol";
+import {CWEJury} from "../contracts/CWEJury.sol";
 
 /// @notice A payee that tries to re-enter `release` when it receives ETH, used
 ///         to prove the reentrancy guard blocks nested releases.
@@ -37,12 +38,14 @@ contract ReentrantEscrowPayee {
 
 /// @title CWEEscrowTest
 /// @notice Unit tests for the fingerprint-match escrow: commit, challenge
-///         reassignment by registration priority, release after the challenge
-///         window, double-release prevention, solvency, and reentrancy safety.
+///         opening an asynchronous jury dispute, verdict-gated reassignment,
+///         release after the challenge window, double-release prevention,
+///         solvency, and reentrancy safety.
 contract CWEEscrowTest is Test {
     CWEEscrow internal escrow;
     CWERegistry internal registry;
     EarliestRegistrationArbiter internal arbiter;
+    CWEJury internal jury;
 
     address internal owner = makeAddr("owner");
     address internal creator = makeAddr("creator");
@@ -72,7 +75,10 @@ contract CWEEscrowTest is Test {
         vm.stopPrank();
 
         arbiter = new EarliestRegistrationArbiter(registry);
-        escrow = new CWEEscrow(registry, aggregator, arbiter);
+        jury = new CWEJury(owner, arbiter);
+        escrow = new CWEEscrow(registry, aggregator, jury);
+        vm.prank(owner);
+        jury.setEscrow(address(escrow));
 
         (address a1, uint256 ak1) = makeAddrAndKey("payeeA1");
         (address a2, uint256 ak2) = makeAddrAndKey("payeeA2");
@@ -162,6 +168,21 @@ contract CWEEscrowTest is Test {
         sigs[1] = _consent(payeeB2Key, workId, contentId, payeeB2, splits[1]);
         vm.prank(creator);
         registry.registerWork(workId, contentId, payees, splits, sigs, 1000, bytes32("EU"));
+    }
+
+    /// @dev Run a challenge to completion with an empty committee: open the
+    ///      dispute, warp past the voting window, finalize (falls back to
+    ///      earliest registration), and resolve. Returns nothing; assertions
+    ///      happen in callers. This keeps the pre-existing challenge tests'
+    ///      meaning intact through the new async path.
+    function _challengeAndResolve(uint256 epochId, bytes32 escrowedWork, bytes32 challengerWork)
+        internal
+    {
+        escrow.challenge(epochId, escrowedWork, challengerWork);
+        uint256 id = escrow.disputeIdOf(epochId, escrowedWork);
+        vm.warp(block.timestamp + jury.VOTING_WINDOW());
+        jury.finalize(id);
+        escrow.resolveDispute(epochId, escrowedWork);
     }
 
     /// @notice Only the aggregator may commit an escrow.
@@ -287,9 +308,10 @@ contract CWEEscrowTest is Test {
         vm.prank(aggregator);
         escrow.commit(EPOCH, escrowedWork, amount);
 
-        // Still within the challenge window (epoch 0).
-        vm.prank(challenger);
-        escrow.challenge(EPOCH, escrowedWork, challengerWork);
+        // Still within the challenge window (epoch 0). Drive the dispute to
+        // completion with no jurors, so the earliest-registration fallback
+        // decides — the challenger registered first, so it wins.
+        _challengeAndResolve(EPOCH, escrowedWork, challengerWork);
 
         // The escrow moved fully from the old work to the challenger's work.
         assertEq(escrow.escrowOf(EPOCH, escrowedWork), 0);
@@ -302,7 +324,7 @@ contract CWEEscrowTest is Test {
 
         // Past the window, releasing the challenger's work pays the "A" payees
         // (the challenger's registered payee set).
-        vm.warp(30 days);
+        vm.warp(block.timestamp + 30 days);
         escrow.release(EPOCH, challengerWork);
         assertEq(payeeA1.balance, 0.6 ether);
         assertEq(payeeA2.balance, 0.4 ether);
@@ -341,9 +363,9 @@ contract CWEEscrowTest is Test {
         vm.expectRevert(abi.encodeWithSelector(CWEEscrow.TooEarly.selector, EPOCH, escrowedWork));
         escrow.release(EPOCH, escrowedWork);
 
-        // ...and the earlier-registered real owner can still challenge and win.
-        vm.prank(challenger);
-        escrow.challenge(EPOCH, escrowedWork, challengerWork);
+        // ...and the earlier-registered real owner can still challenge and,
+        // once the (jurorless) dispute resolves via the fallback, win.
+        _challengeAndResolve(EPOCH, escrowedWork, challengerWork);
         assertEq(escrow.escrowOf(EPOCH, escrowedWork), 0);
         assertEq(escrow.escrowOf(EPOCH, challengerWork), amount);
 
@@ -354,17 +376,96 @@ contract CWEEscrowTest is Test {
         assertEq(payeeA2.balance, 0.4 ether);
     }
 
-    /// @notice A challenger registered LATER than the escrowed work fails, even
-    ///         though it shares the escrowed work's content id.
-    function test_challenge_laterRegistration_reverts() public {
+    /// @notice A challenge opens a jury dispute instead of instantly deciding:
+    ///         the escrowed amount stays exactly where it was, the challenger's
+    ///         slot stays empty, and a nonzero dispute id is now recorded.
+    function test_challenge_opensDispute_noInstantReassign() public {
+        bytes32 challengerWork = keccak256("work-challenger");
+        bytes32 escrowedWork = keccak256("work-escrowed");
+
+        vm.warp(1000);
+        _registerAWithContent(challengerWork, CONTENT_A);
+        vm.warp(2000);
+        _registerBWithContent(escrowedWork, CONTENT_A);
+
+        uint256 amount = 1 ether;
+        vm.deal(address(escrow), amount);
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, escrowedWork, amount);
+
+        vm.prank(challenger);
+        escrow.challenge(EPOCH, escrowedWork, challengerWork);
+
+        assertEq(escrow.escrowOf(EPOCH, escrowedWork), amount);
+        assertEq(escrow.escrowOf(EPOCH, challengerWork), 0);
+        assertTrue(escrow.disputeIdOf(EPOCH, escrowedWork) != 0);
+    }
+
+    /// @notice Release is paused while a dispute is open, even after the
+    ///         challenge window has otherwise elapsed — the verdict must land
+    ///         first via `resolveDispute`.
+    function test_release_blockedWhileDisputed_reverts() public {
+        bytes32 challengerWork = keccak256("work-challenger");
+        bytes32 escrowedWork = keccak256("work-escrowed");
+
+        vm.warp(1000);
+        _registerAWithContent(challengerWork, CONTENT_A);
+        vm.warp(2000);
+        _registerBWithContent(escrowedWork, CONTENT_A);
+
+        uint256 amount = 1 ether;
+        vm.deal(address(escrow), amount);
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, escrowedWork, amount);
+
+        escrow.challenge(EPOCH, escrowedWork, challengerWork);
+
+        vm.warp(30 days);
+        vm.expectRevert(abi.encodeWithSelector(CWEEscrow.Disputed.selector, EPOCH, escrowedWork));
+        escrow.release(EPOCH, escrowedWork);
+    }
+
+    /// @notice A resolved dispute the challenger won reassigns the escrow
+    ///         (amount/releaseEpoch/contentId intact) and clears the dispute,
+    ///         so the challenger's work becomes releasable and fully solvent.
+    function test_resolveDispute_challengerWins_reassigns() public {
+        bytes32 challengerWork = keccak256("work-challenger");
+        bytes32 escrowedWork = keccak256("work-escrowed");
+
+        // The challenger registers earlier, so the jurorless fallback favours it.
+        vm.warp(1000);
+        _registerAWithContent(challengerWork, CONTENT_A);
+        vm.warp(2000);
+        _registerBWithContent(escrowedWork, CONTENT_A);
+
+        uint256 amount = 1 ether;
+        vm.deal(address(escrow), amount);
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, escrowedWork, amount);
+
+        _challengeAndResolve(EPOCH, escrowedWork, challengerWork);
+
+        assertEq(escrow.escrowOf(EPOCH, escrowedWork), 0);
+        assertEq(escrow.escrowOf(EPOCH, challengerWork), amount);
+        assertEq(escrow.disputeIdOf(EPOCH, escrowedWork), 0);
+
+        vm.warp(block.timestamp + 30 days);
+        escrow.release(EPOCH, challengerWork);
+        assertEq(payeeA1.balance, 0.6 ether);
+        assertEq(payeeA2.balance, 0.4 ether);
+        assertEq(escrow.liability(), 0);
+    }
+
+    /// @notice A resolved dispute the incumbent won clears the dispute in
+    ///         place, leaving the escrow exactly as it was and releasable.
+    function test_resolveDispute_incumbentKeeps() public {
         bytes32 escrowedWork = keccak256("work-escrowed");
         bytes32 challengerWork = keccak256("work-challenger");
 
-        // The escrowed work registers first (earlier priority)...
+        // The incumbent registers earlier and the challenger LATER, so the
+        // jurorless fallback keeps the incumbent.
         vm.warp(1000);
         _registerAWithContent(escrowedWork, CONTENT_A);
-        // ...the would-be challenger, over the SAME content, registers later,
-        // so it cannot win.
         vm.warp(2000);
         _registerBWithContent(challengerWork, CONTENT_A);
 
@@ -373,11 +474,108 @@ contract CWEEscrowTest is Test {
         vm.prank(aggregator);
         escrow.commit(EPOCH, escrowedWork, amount);
 
-        vm.expectRevert(CWEEscrow.ChallengeFailed.selector);
+        _challengeAndResolve(EPOCH, escrowedWork, challengerWork);
+
+        assertEq(escrow.escrowOf(EPOCH, escrowedWork), amount);
+        assertEq(escrow.disputeIdOf(EPOCH, escrowedWork), 0);
+
+        // Past the (now long-elapsed) window, release succeeds and pays the
+        // incumbent's ("A") payees.
+        vm.warp(block.timestamp + 30 days);
+        escrow.release(EPOCH, escrowedWork);
+        assertEq(payeeA1.balance, 0.6 ether);
+        assertEq(payeeA2.balance, 0.4 ether);
+    }
+
+    /// @notice A second challenge against an escrow with an already-open
+    ///         dispute reverts — only one dispute may be open per escrow.
+    function test_challenge_twice_reverts() public {
+        bytes32 escrowedWork = keccak256("work-escrowed");
+        bytes32 challengerWork = keccak256("work-challenger");
+        bytes32 otherChallenger = keccak256("work-other-challenger");
+
+        vm.warp(1000);
+        _registerAWithContent(challengerWork, CONTENT_A);
+        vm.warp(1500);
+        _registerAWithContent(otherChallenger, CONTENT_A);
+        vm.warp(2000);
+        _registerBWithContent(escrowedWork, CONTENT_A);
+
+        uint256 amount = 1 ether;
+        vm.deal(address(escrow), amount);
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, escrowedWork, amount);
+
         escrow.challenge(EPOCH, escrowedWork, challengerWork);
 
-        // The escrow is untouched.
-        assertEq(escrow.escrowOf(EPOCH, escrowedWork), amount);
+        vm.expectRevert(abi.encodeWithSelector(CWEEscrow.AlreadyDisputed.selector, EPOCH, escrowedWork));
+        escrow.challenge(EPOCH, escrowedWork, otherChallenger);
+    }
+
+    /// @notice Resolving before the jury has finalized the dispute reverts —
+    ///         the verdict simply isn't available yet.
+    function test_resolveDispute_beforeFinalize_reverts() public {
+        bytes32 escrowedWork = keccak256("work-escrowed");
+        bytes32 challengerWork = keccak256("work-challenger");
+
+        vm.warp(1000);
+        _registerAWithContent(challengerWork, CONTENT_A);
+        vm.warp(2000);
+        _registerBWithContent(escrowedWork, CONTENT_A);
+
+        uint256 amount = 1 ether;
+        vm.deal(address(escrow), amount);
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, escrowedWork, amount);
+
+        escrow.challenge(EPOCH, escrowedWork, challengerWork);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(CWEEscrow.DisputeNotResolved.selector, EPOCH, escrowedWork)
+        );
+        escrow.resolveDispute(EPOCH, escrowedWork);
+    }
+
+    /// @notice A committee vote overrides what the earliest-registration
+    ///         fallback would have decided: the incumbent registers earlier
+    ///         (the fallback default would keep it), but jurors vote for the
+    ///         challenger, which then wins.
+    function test_committeeOverridesFallback() public {
+        bytes32 escrowedWork = keccak256("work-escrowed");
+        bytes32 challengerWork = keccak256("work-challenger");
+
+        vm.warp(1000);
+        _registerAWithContent(escrowedWork, CONTENT_A); // incumbent: earlier
+        vm.warp(2000);
+        _registerBWithContent(challengerWork, CONTENT_A); // challenger: later
+
+        uint256 amount = 1 ether;
+        vm.deal(address(escrow), amount);
+        vm.prank(aggregator);
+        escrow.commit(EPOCH, escrowedWork, amount);
+
+        address juror1 = makeAddr("juror1");
+        address juror2 = makeAddr("juror2");
+        vm.startPrank(owner);
+        jury.setJuror(juror1, true);
+        jury.setJuror(juror2, true);
+        vm.stopPrank();
+
+        escrow.challenge(EPOCH, escrowedWork, challengerWork);
+        uint256 disputeId = escrow.disputeIdOf(EPOCH, escrowedWork);
+
+        vm.prank(juror1);
+        jury.vote(disputeId, challengerWork);
+        vm.prank(juror2);
+        jury.vote(disputeId, challengerWork);
+
+        vm.warp(block.timestamp + jury.VOTING_WINDOW());
+        jury.finalize(disputeId);
+        escrow.resolveDispute(EPOCH, escrowedWork);
+
+        // The committee moved the escrow against the timestamp default.
+        assertEq(escrow.escrowOf(EPOCH, challengerWork), amount);
+        assertEq(escrow.escrowOf(EPOCH, escrowedWork), 0);
     }
 
     /// @notice A challenge whose challenger work has a DIFFERENT content id

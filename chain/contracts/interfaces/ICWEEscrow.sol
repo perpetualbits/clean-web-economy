@@ -16,12 +16,18 @@ interface ICWEEscrow {
     /// @param amount The credited amount to escrow.
     function commit(uint256 epochId, bytes32 workId, uint256 amount) external;
 
-    /// @notice Challenge an escrowed credit with a competing work.
-    /// @dev If the arbiter favours `challengerWork`, the escrow reassigns to it.
+    /// @notice Challenge an escrowed credit with a competing work, opening a jury
+    ///         dispute (the verdict is applied later via `resolveDispute`).
     /// @param epochId The epoch the escrow was committed under.
     /// @param escrowedWork The work currently holding the escrow.
     /// @param challengerWork The competing work claiming the credit instead.
     function challenge(uint256 epochId, bytes32 escrowedWork, bytes32 challengerWork) external;
+
+    /// @notice Apply a finalized jury verdict to a disputed escrow — reassigning to
+    ///         the challenger if it won, or clearing the dispute if the incumbent did.
+    /// @param epochId The epoch the escrow was committed under.
+    /// @param escrowedWork The work the dispute was opened against.
+    function resolveDispute(uint256 epochId, bytes32 escrowedWork) external;
 
     /// @notice Release an escrow past its challenge window, split-paying its payees.
     /// @param epochId The epoch the escrow was committed under.
