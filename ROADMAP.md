@@ -12,14 +12,17 @@
 See `docs/plans/phase1_mvp_music_implementation_plan.md` and
 `docs/plans/phase1_demo.md`.
 
-## Phase 2 — Video & News *(2 of 3 done)*
+## Phase 2 — Video & News ✅ complete
 - [x] Discovery Hub MVP + OpenAPI (`make -C ops hub-demo`) — see
   `docs/superpowers/specs/2026-07-21-discovery-hub-mvp-design.md`
 - [x] Player agent MVP — native Rust `cwe-player` (decode → two-tier recognition →
   price cap → accrual → on-chain settle), `make -C ops player-demo`; the VLC/FFmpeg
   C module is a deferred FFI shim — see
   `docs/superpowers/specs/2026-07-21-player-plugin-mvp-design.md`
-- [ ] Arbitration jury flow (stub)
+- [x] Arbitration jury flow — `CWEJury` committee (file → vote → finalize) whose
+  verdict moves the escrow, with earliest-registration fallback; `CWEEscrow` reworked
+  to an async dispute; `make -C ops arbitration-demo` — see
+  `docs/superpowers/specs/2026-07-22-arbitration-jury-design.md`
 
 ## Hardening track (graduate the MVP stubs)
 Runs alongside the feature phases.

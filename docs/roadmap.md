@@ -11,12 +11,12 @@ detailed, status-annotated plan.
 
 ## 1. Where we are
 
-Four milestones are complete and merged to `main`, each with a one-command
+Five milestones are complete and merged to `main`, each with a one-command
 end-to-end demo on a local Anvil devnet.
 
 | Area | Built | Status |
 |---|---|---|
-| **Contracts** (`chain/`) | `CWETiers`, `CWEConsumption`, `CWEPayouts`, `IProofVerifier`/`AcceptAllVerifier`; `CWERegistry` (+ `content_id`, multi-party consent, registration timestamp); `CWEEscrow` + `EarliestRegistrationArbiter`/`IArbiter` | ✅ Phase 1 · H1 |
+| **Contracts** (`chain/`) | `CWETiers`, `CWEConsumption`, `CWEPayouts`, `IProofVerifier`/`AcceptAllVerifier`; `CWERegistry` (+ `content_id`, multi-party consent, registration timestamp); `CWEEscrow` (async dispute flow) + `EarliestRegistrationArbiter`/`IArbiter`; `CWEJury`/`IJury` (committee) | ✅ Phase 1 · H1 · Phase 2·3 |
 | **Payout math** (`sims/`) | `cwe-dapr` — weighted split, ppm integer math, fixtures | ✅ Phase 1 |
 | **Fingerprint** (`libs/fingerprint`) | Haitsma-Kalker perceptual fingerprint (gain-invariant, Hamming compare), `fp:<hex>` format | ✅ H1 |
 | **Client core** (`libs/wallet-zk`) | keccak commitments, `none-v0` ZK seam, epoch session store | ✅ Phase 1 |
@@ -24,7 +24,8 @@ end-to-end demo on a local Anvil devnet.
 | **Browser extension** (`clients/browser-ext`) | Rust→WASM core + MV3 shell; local accounting, price cap, settle flow; two-tier recognition (signed content + fingerprint fallback) | ✅ Phase 1 · H1 |
 | **Discovery Hub** (`services/discovery-hub`) | signed, chain-anchored manifest ingest; content-id (Tier 1) + fingerprint nearest-match (Tier 2) resolve; search/trending; OpenAPI | ✅ Phase 2·1 · H1 |
 | **Player agent** (`clients/player-plugin`) | native Rust `cwe-player`: symphonia decode → two-tier recognition → price cap → accrual → on-chain settle; `play`/`status`/`settle`/`fingerprint` | ✅ Phase 2·2 |
-| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, `make player-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e/player-e2e) | ✅ |
+| **Arbitration jury** (`chain/`) | `CWEJury` committee: owner-appointed jurors, file→vote→finalize, majority verdict moves the escrow, earliest-registration fallback on a tie/silence | ✅ Phase 2·3 |
+| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, `make player-demo`, `make arbitration-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e/player-e2e/arbitration-e2e) | ✅ |
 
 ### What is real vs. stubbed
 
@@ -67,7 +68,7 @@ seam designed for drop-in replacement:
 
 ### Feature track
 
-#### Phase 2 — Video & News *(2 of 3 done)*
+#### Phase 2 — Video & News ✅ *(3 of 3 done)*
 - ✅ **2.1 Discovery Hub MVP** — resolution + search over signed manifests.
 - ✅ **2.2 Player agent (MVP)** — a native Rust desktop client (`cwe-player`,
   `clients/player-plugin/`) bringing local accounting + fingerprinting outside the
@@ -76,9 +77,16 @@ seam designed for drop-in replacement:
   (`cwe-fingerprint`, `cwe-wallet-zk`) natively. *Remaining seam:* the actual
   VLC/FFmpeg C module is a thin FFI shim over this agent (deferred); audio-only for
   now (video fingerprinting is its own item).
-- ⬜ **2.3 Arbitration jury flow (stub)** — dispute filing, juror selection, voting,
-  resolution (`services/arbitration/`), with contract hooks. *Depends on:* identity
-  primitives (can start with the allowlist stub). *Feeds:* Phase 4 governance.
+- ✅ **2.3 Arbitration jury flow (stub)** — the `CWEJury` committee replaces the
+  escrow's instant earliest-registration rule with a real file→vote→finalize dispute:
+  owner-appointed jurors vote a majority verdict that moves the escrowed money, with
+  earliest-registration as the tie/silence fallback. `CWEEscrow` reworked to an async
+  dispute (challenge opens a dispute + blocks release; `resolveDispute` applies the
+  verdict). `make arbitration-demo` proves a committee overturning a first-registered
+  fraudster. *Trust model:* a trusted committee now; the **staked open court**
+  (commit-reveal, slashing) is the deferred trustless graduation at the same `IJury`
+  seam. *Deferred:* the Rust `services/arbitration/` operator tool + a filing bond.
+  *Feeds:* Phase 4 governance.
 
 #### Phase 3 — Distributed Microservice Fabric (DMF)
 Creator shops, gigs/commissions, escrow + split-pay, a signed service registry, and
@@ -141,7 +149,7 @@ flowchart LR
   P21 --> H9[H9 Discovery v2]
   H1 --> H9
   H1 --> H3[H3 Full DAPR + anti-fraud]
-  H1 --> P23[2.3 Arbitration]
+  H1 --> P23[2.3 Arbitration ✅]
   H3 --> H9
   H6[H6 SSI identity] --> P3[Phase 3 DMF]
   P22 --> P3
@@ -159,17 +167,20 @@ trust-minimisation backbone but can trail the feature work.
 
 ## 5. Recommended near-term next steps
 
-Ranked by value-per-effort given what exists (H1 — recognition & ownership — and
-Phase 2.2 — the player agent — are now ✅ done, so the recognition/provenance/escrow
-foundation and a native desktop client are both in place):
+Ranked by value-per-effort given what exists. **Phase 2 is now complete** (Discovery
+Hub, player agent, and the arbitration jury all ✅), and H1 gave the
+recognition/provenance/escrow foundation — so the next moves are hardening and the
+first Phase 3 groundwork:
 
-1. **Phase 2.3 — Arbitration jury flow.** The last of Phase 2. Promotes the
-   `IArbiter` seam H1 introduced from the earliest-registration stub to a real
-   dispute/juror/voting process — directly hardening the escrow challenge path.
-2. **H3 — Full DAPR + anti-fraud.** Builds on H1's escrow spine: bandwidth
-   credibility, diminishing returns, diversity weighting, Sybil resistance. Then
-   **Phase 3 (DMF)** once **H6 (identity)** is in place.
+1. **H3 — Full DAPR + anti-fraud.** Builds on H1's escrow spine and 2.3's dispute
+   flow: bandwidth credibility, diminishing returns, diversity weighting, Sybil
+   resistance — the biggest remaining trust-and-fairness lever.
+2. **H6 — SSI/VC identity.** Verifiable creator credentials replacing the allowlist;
+   gates **Phase 3 (DMF)** and also graduates the jury toward a real, non-allowlisted
+   court.
 3. **Player agent follow-ons.** The real VLC/FFmpeg C module (FFI shim over the
    agent) and video fingerprinting, once the audio MVP has proven the flow.
+4. **Trustless jury (staked court).** Commit-reveal voting + slashing at the `IJury`
+   seam — the trustless graduation of 2.3, when the staking/identity primitives exist.
 
 Each becomes its own spec → plan → build cycle. This document is updated as items land.
