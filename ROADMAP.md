@@ -31,9 +31,14 @@ Runs alongside the feature phases.
   fallback), multi-party consent provenance, and a `CWEEscrow` + arbiter anti-fraud
   spine (`make -C ops ownership-demo`) — see
   `docs/superpowers/specs/2026-07-21-recognition-and-ownership-design.md`
+- [x] **H3 — Full DAPR + anti-fraud** ✅ — `cwe-dapr` user-centric model: diminishing
+  returns (play count bound in the commitment), a bandwidth-credibility discount
+  (neutral default), and a reputation signal; deterministic + fee-conserving; fraud
+  capped and a strict loss under low bandwidth (`make -C ops antifraud-demo`) — see
+  `docs/superpowers/specs/2026-07-22-full-dapr-antifraud-design.md`
 
-Still to come: ZK usage proofs, the full DAPR model + anti-fraud, decentralised
-settlement, a storage layer, SSI/VC identity, tier capability tokens, an epoch
+Still to come: ZK usage proofs, decentralised settlement, a storage layer (real
+bandwidth receipts), SSI/VC identity, tier capability tokens, an epoch
 beacon, discovery v2, and security/legal hardening. Details and spec mapping in
 [`docs/roadmap.md`](docs/roadmap.md).
 

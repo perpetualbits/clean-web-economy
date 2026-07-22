@@ -11,13 +11,13 @@ detailed, status-annotated plan.
 
 ## 1. Where we are
 
-Five milestones are complete and merged to `main`, each with a one-command
+Six milestones are complete and merged to `main`, each with a one-command
 end-to-end demo on a local Anvil devnet.
 
 | Area | Built | Status |
 |---|---|---|
 | **Contracts** (`chain/`) | `CWETiers`, `CWEConsumption`, `CWEPayouts`, `IProofVerifier`/`AcceptAllVerifier`; `CWERegistry` (+ `content_id`, multi-party consent, registration timestamp); `CWEEscrow` (async dispute flow) + `EarliestRegistrationArbiter`/`IArbiter`; `CWEJury`/`IJury` (committee) | ✅ Phase 1 · H1 · Phase 2·3 |
-| **Payout math** (`sims/`) | `cwe-dapr` — weighted split, ppm integer math, fixtures | ✅ Phase 1 |
+| **Payout math** (`sims/`) | `cwe-dapr` — user-centric DAPR: diminishing returns, bandwidth-credibility discount, reputation signal; deterministic integer math, fee-conserving | ✅ Phase 1 · H3 |
 | **Fingerprint** (`libs/fingerprint`) | Haitsma-Kalker perceptual fingerprint (gain-invariant, Hamming compare), `fp:<hex>` format | ✅ H1 |
 | **Client core** (`libs/wallet-zk`) | keccak commitments, `none-v0` ZK seam, epoch session store | ✅ Phase 1 |
 | **Settlement** (`services/settlement`) | reads events, opens commitments, runs DAPR, commits Merkle root; routes signed → direct payout, fingerprint → escrow | ✅ Phase 1 · H1 |
@@ -25,7 +25,7 @@ end-to-end demo on a local Anvil devnet.
 | **Discovery Hub** (`services/discovery-hub`) | signed, chain-anchored manifest ingest; content-id (Tier 1) + fingerprint nearest-match (Tier 2) resolve; search/trending; OpenAPI | ✅ Phase 2·1 · H1 |
 | **Player agent** (`clients/player-plugin`) | native Rust `cwe-player`: symphonia decode → two-tier recognition → price cap → accrual → on-chain settle; `play`/`status`/`settle`/`fingerprint` | ✅ Phase 2·2 |
 | **Arbitration jury** (`chain/`) | `CWEJury` committee: owner-appointed jurors, file→vote→finalize, majority verdict moves the escrow, earliest-registration fallback on a tie/silence | ✅ Phase 2·3 |
-| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, `make player-demo`, `make arbitration-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e/player-e2e/arbitration-e2e) | ✅ |
+| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, `make player-demo`, `make arbitration-demo`, `make antifraud-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e/player-e2e/arbitration-e2e/antifraud-e2e) | ✅ |
 
 ### What is real vs. stubbed
 
@@ -117,9 +117,15 @@ track:
 - **H2 — ZK usage proofs** (`zk_usage_proof_requirements.md`, `docs/issues/003`):
   real circuits behind the `ZK`/`IProofVerifier` seam, replacing the disclosure file.
   Removes the aggregator's view of raw usage.
-- **H3 — Full DAPR + anti-fraud** (`DAPR_usage_aggregation_protocol.md`,
-  `anti-fraud_and_bandwidth_receipt_protocol.md`): bandwidth credibility, per-user
-  diminishing returns, diversity weighting, Sybil resistance. Feeds discovery ranking.
+- ✅ **H3 — Full DAPR + anti-fraud** (`DAPR_usage_aggregation_protocol.md`,
+  `anti-fraud_and_bandwidth_receipt_protocol.md`): `cwe-dapr` now computes the real
+  **user-centric** DAPR model — per-user diminishing returns (play count bound in the
+  commitment), a bandwidth-credibility discount (neutral default; real receipts = H5),
+  and a diversity/reputation signal for discovery — all deterministic integer math,
+  fee-conserving, with neutral defaults reproducing the prior payouts bit-for-bit.
+  Fraud is structurally capped (extract ≤ pay-in) and becomes a strict loss under low
+  bandwidth credibility (`make antifraud-demo`). *Deferred:* real ZK bandwidth
+  receipts (H5), reputation→hub-ranking wiring, the staked/global-pool alternatives.
 - **H4 — Decentralised settlement** (`rollup_aggregation_and_settlement_Interface_specification.md`):
   move from a single trusted aggregator to a rollup/multi-aggregator model.
 - **H5 — Storage layer** (`client-storage_handshake_specification.md`,
@@ -148,7 +154,7 @@ flowchart LR
   P1 --> H1[H1 Recognition & Ownership ✅]
   P21 --> H9[H9 Discovery v2]
   H1 --> H9
-  H1 --> H3[H3 Full DAPR + anti-fraud]
+  H1 --> H3[H3 Full DAPR + anti-fraud ✅]
   H1 --> P23[2.3 Arbitration ✅]
   H3 --> H9
   H6[H6 SSI identity] --> P3[Phase 3 DMF]
@@ -167,20 +173,20 @@ trust-minimisation backbone but can trail the feature work.
 
 ## 5. Recommended near-term next steps
 
-Ranked by value-per-effort given what exists. **Phase 2 is now complete** (Discovery
-Hub, player agent, and the arbitration jury all ✅), and H1 gave the
-recognition/provenance/escrow foundation — so the next moves are hardening and the
-first Phase 3 groundwork:
+Ranked by value-per-effort given what exists. **Phase 2 is complete** (Discovery Hub,
+player agent, arbitration jury) and the **DAPR payout model + anti-fraud (H3)** now
+lands — so the recognition/provenance/escrow/payout core is in place, and the next
+moves are the trust-minimisation backbone, identity, and first Phase 3 groundwork:
 
-1. **H3 — Full DAPR + anti-fraud.** Builds on H1's escrow spine and 2.3's dispute
-   flow: bandwidth credibility, diminishing returns, diversity weighting, Sybil
-   resistance — the biggest remaining trust-and-fairness lever.
+1. **H2 — ZK usage proofs.** Replace the disclosure-file stand-in with real circuits
+   behind the `IProofVerifier` seam — removes the aggregator's view of raw usage and
+   is the prerequisite the whole privacy story leans on.
 2. **H6 — SSI/VC identity.** Verifiable creator credentials replacing the allowlist;
-   gates **Phase 3 (DMF)** and also graduates the jury toward a real, non-allowlisted
-   court.
-3. **Player agent follow-ons.** The real VLC/FFmpeg C module (FFI shim over the
-   agent) and video fingerprinting, once the audio MVP has proven the flow.
-4. **Trustless jury (staked court).** Commit-reveal voting + slashing at the `IJury`
-   seam — the trustless graduation of 2.3, when the staking/identity primitives exist.
+   gates **Phase 3 (DMF)** and graduates the jury toward a real, non-allowlisted court.
+3. **H5 — Storage layer + real bandwidth receipts.** The peer-to-peer storage/swarm
+   that supplies the *real* bandwidth-credibility signal H3 wired as a neutral input —
+   turning the anti-fraud "strict loss" from demonstrated to live.
+4. **Follow-ons:** the reputation→hub-ranking wiring (H3 fast-follow); the player
+   agent's VLC/FFmpeg C module + video fingerprinting; the trustless staked jury.
 
 Each becomes its own spec → plan → build cycle. This document is updated as items land.
