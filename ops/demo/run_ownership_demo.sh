@@ -15,14 +15,17 @@
 #     the *signed* content, and settlement pays the three payees directly, split
 #     exactly by their consented shares.
 #
-#   Tier 2 — unsigned copy (fingerprint match, escrow + challenge):
+#   Tier 2 — unsigned copy (fingerprint match, escrow + dispute + challenge):
 #     A fraudster registers a *second* work claiming the SAME content, later than
 #     the real owner. A listener plays an unsigned copy; the client recognizes it
 #     only by perceptual fingerprint (Tier 2), so its credit is *escrowed*, not
 #     paid. The real owner — registered earlier for the same content — challenges
-#     the escrow; the earliest-registration arbiter reassigns it to them. After
-#     the challenge window elapses, the escrow releases to the real owner's
-#     payees. The fraudster is never paid a cent.
+#     the escrow; this OPENS an asynchronous jury dispute rather than deciding
+#     instantly. No jurors are appointed in this demo, so once the voting window
+#     closes, the jury's finalize falls back to the earliest-registration rule
+#     and the escrow reassigns to the real owner. After the challenge window
+#     elapses, the escrow releases to the real owner's payees. The fraudster is
+#     never paid a cent.
 #
 # Recognition here is modeled by the settlement disclosure exactly as the
 # extension emits it: a work the client matched only by fingerprint is listed in
@@ -38,7 +41,10 @@
 #   4. two listeners subscribe (funding the pool); one plays signed, one unsigned
 #   5. settle: the signed work pays direct, the fingerprint-matched work escrows
 #   6. the three payees withdraw the direct payout — split 70/20/10 exactly
-#   7. the real owner challenges the escrow -> reassigned off the fraudster
+#   7. the real owner challenges the escrow -> opens a jury dispute (no instant
+#      reassignment); warp past the voting window and finalize -> the silent
+#      committee falls back to earliest-registration -> resolveDispute reassigns
+#      the escrow off the fraudster
 #   8. warp past the challenge window and release -> the real owner's payees paid
 #
 # Requirements: foundry (anvil/forge/cast), cargo, jq. No Docker needed — the
@@ -101,8 +107,8 @@ step "1. Deploying contracts"
 DEP="$ROOT/chain/deployments/localhost.json"
 REG=$(jq -r .registry "$DEP"); TIERS=$(jq -r .tiers "$DEP")
 CONS=$(jq -r .consumption "$DEP"); PAY=$(jq -r .payouts "$DEP")
-ESCROW=$(jq -r .escrow "$DEP")
-echo "registry=$REG payouts=$PAY escrow=$ESCROW"
+ESCROW=$(jq -r .escrow "$DEP"); JURY=$(jq -r .jury "$DEP")
+echo "registry=$REG payouts=$PAY escrow=$ESCROW jury=$JURY"
 
 # --- step 2: register the real owner's multi-collaborator song -------------
 # The registrant reads each payee's consent digest on-chain and has that payee
@@ -226,11 +232,27 @@ echo "  band $(cast to-unit $G_BAND ether) / musician $(cast to-unit $G_MUSICIAN
 echo "  ✓ direct payout split by consented shares"
 
 # --- step 7: the real owner challenges the fraudster's escrow --------------
-# Same content id + strictly-earlier registration -> the arbiter reassigns the
-# escrow off the fraud work and onto the real work. The credit moves; nothing
-# has been paid to the fraudster.
-step "7. Real owner challenges the escrow (earlier registration wins)"
+# `challenge` no longer decides on the spot -- it OPENS an asynchronous jury
+# dispute and leaves the escrow exactly where it was until `resolveDispute`
+# applies the finalized verdict. Confirm that: a nonzero dispute id exists, and
+# neither work's escrowed balance has moved yet.
+step "7. Real owner challenges the escrow -> opens a jury dispute"
 send $DEPLOYER $ESCROW "challenge(uint256,bytes32,bytes32)" $EPOCH $WORK_FRAUD $WORK_REAL
+DISPUTE=$(callnum $ESCROW "disputeIdOf(uint256,bytes32)(uint256)" $EPOCH $WORK_FRAUD)
+[ "$DISPUTE" != "0" ] || { echo "  FAIL: challenge did not open a dispute"; fail=1; }
+ESC_FRAUD_MID=$(callnum $ESCROW "escrowOf(uint256,bytes32)(uint256)" $EPOCH $WORK_FRAUD)
+ESC_REAL_MID=$(callnum $ESCROW "escrowOf(uint256,bytes32)(uint256)" $EPOCH $WORK_REAL)
+[ "$ESC_FRAUD_MID" = "$ESC_AMT" ] || { echo "  FAIL: fraud escrow moved before resolution ($ESC_FRAUD_MID != $ESC_AMT)"; fail=1; }
+[ "$ESC_REAL_MID" = "0" ] || { echo "  FAIL: real escrow funded before resolution ($ESC_REAL_MID != 0)"; fail=1; }
+echo "  ✓ dispute #$DISPUTE opened; no instant reassignment"
+
+# No jurors are appointed in this demo, so once the voting window closes,
+# `finalize` falls back to the earliest-registration rule (real owner wins).
+# `resolveDispute` then applies that verdict to the escrow.
+step "7b. Voting window closes -> jury falls back to earliest registration"
+warp $((21 * 24 * 3600 + 60))
+send $DEPLOYER $JURY "finalize(uint256)" $DISPUTE
+send $DEPLOYER $ESCROW "resolveDispute(uint256,bytes32)" $EPOCH $WORK_FRAUD
 ESC_FRAUD_AFTER=$(callnum $ESCROW "escrowOf(uint256,bytes32)(uint256)" $EPOCH $WORK_FRAUD)
 ESC_REAL_AFTER=$(callnum $ESCROW "escrowOf(uint256,bytes32)(uint256)" $EPOCH $WORK_REAL)
 [ "$ESC_FRAUD_AFTER" = "0" ] || { echo "  FAIL: fraud escrow not cleared ($ESC_FRAUD_AFTER)"; fail=1; }
@@ -238,7 +260,9 @@ ESC_REAL_AFTER=$(callnum $ESCROW "escrowOf(uint256,bytes32)(uint256)" $EPOCH $WO
 echo "  ✓ escrow reassigned from fraud -> real work"
 
 # --- step 8: warp past the window and release ------------------------------
-# The challenge window is one epoch; warp two to clear it unconditionally, then
+# The challenge window is one epoch; warp two more to clear it unconditionally
+# (stacked on top of the 21-day voting warp above, `currentEpoch()` is already
+# well past the release epoch, so this just keeps the same safety margin), then
 # release. The reassigned escrow pays the real owner's payees per their shares.
 step "8. Warp past the challenge window and release"
 FRAUD0=$(bal $FRAUD)

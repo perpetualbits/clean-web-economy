@@ -9,6 +9,8 @@ import {CWEConsumption} from "../contracts/CWEConsumption.sol";
 import {CWEPayouts} from "../contracts/CWEPayouts.sol";
 import {EarliestRegistrationArbiter} from "../contracts/EarliestRegistrationArbiter.sol";
 import {CWEEscrow} from "../contracts/CWEEscrow.sol";
+import {CWEJury} from "../contracts/CWEJury.sol";
+import {IJury} from "../contracts/interfaces/IJury.sol";
 
 /// @title Deploy
 /// @notice Deploys the full Phase 1 contract set and wires them together, then
@@ -33,6 +35,7 @@ contract Deploy is Script {
         address consumption;
         address payouts;
         address arbiter;
+        address jury;
         address escrow;
         address owner;
         address aggregator;
@@ -64,11 +67,13 @@ contract Deploy is Script {
         d.payouts = address(new CWEPayouts(CWERegistry(d.registry), d.aggregator));
         // The Phase 1 arbitration stub: earliest registration wins a dispute.
         d.arbiter = address(new EarliestRegistrationArbiter(CWERegistry(d.registry)));
+        // The Phase 2.3 jury: a trusted committee that resolves escrow disputes by
+        // majority vote, falling back to the earliest-registration arbiter above
+        // on a tie or a silent committee.
+        d.jury = address(new CWEJury(d.owner, EarliestRegistrationArbiter(d.arbiter)));
         // The fingerprint-match escrow: holds credit behind a challenge window,
-        // consulting the arbiter on challenges and the registry for splits.
-        d.escrow = address(
-            new CWEEscrow(CWERegistry(d.registry), d.aggregator, EarliestRegistrationArbiter(d.arbiter))
-        );
+        // consulting the jury on challenges and the registry for splits.
+        d.escrow = address(new CWEEscrow(CWERegistry(d.registry), d.aggregator, IJury(d.jury)));
 
         vm.stopBroadcast();
 
@@ -77,6 +82,13 @@ contract Deploy is Script {
         if (d.owner == deployer) {
             vm.broadcast(deployerKey);
             CWETiers(d.tiers).setPayoutPool(payable(d.payouts));
+        }
+
+        // Authorise the escrow to open disputes on the jury. This must be done by
+        // the jury's owner; on a devnet that is the deployer, so broadcast as owner.
+        if (d.owner == deployer) {
+            vm.broadcast(deployerKey);
+            CWEJury(d.jury).setEscrow(d.escrow);
         }
 
         // Persist the addresses so off-chain tooling (settlement job, extension,
@@ -98,6 +110,7 @@ contract Deploy is Script {
         vm.serializeAddress(obj, "aggregator", d.aggregator);
         vm.serializeAddress(obj, "payouts", d.payouts);
         vm.serializeAddress(obj, "arbiter", d.arbiter);
+        vm.serializeAddress(obj, "jury", d.jury);
         string memory json = vm.serializeAddress(obj, "escrow", d.escrow);
 
         vm.writeJson(json, "deployments/localhost.json");
