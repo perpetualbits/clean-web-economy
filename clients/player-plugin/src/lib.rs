@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod decode;
+pub mod session;
 
 /// The crate-wide error type surfaced by the CLI.
 #[derive(Debug, thiserror::Error)]
@@ -15,4 +16,7 @@ pub enum PlayerError {
     /// An audio decode problem.
     #[error(transparent)]
     Decode(#[from] decode::DecodeError),
+    /// A session state problem.
+    #[error(transparent)]
+    Session(#[from] session::SessionError),
 }
