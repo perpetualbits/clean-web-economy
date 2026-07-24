@@ -141,12 +141,22 @@ impl Dataset {
     /// stray above-neutral value degrades to neutral instead of breaking conservation
     /// and failing the epoch.
     pub fn bw(&self, work: &WorkId) -> u64 {
-        self.bandwidth_ppm
-            .get(work)
-            .copied()
-            .unwrap_or(1_000_000)
-            .min(1_000_000)
+        bw_ppm(&self.bandwidth_ppm, work)
     }
+}
+
+/// The bandwidth credibility for `work` in ppm, looked up in `bandwidth_ppm` and
+/// clamped to `[0, 1_000_000]`. Free-function form of [`Dataset::bw`], shared by
+/// [`allocate`] (via `Dataset::bw`) and [`allocate_from_raw`] (which has no
+/// `Dataset` to hand, only the bare map): `1_000_000` (neutral) when `work` is
+/// absent from the map, and any above-neutral entry degrades to neutral so that
+/// `cred ≤ raw` always holds.
+fn bw_ppm(bandwidth_ppm: &BTreeMap<WorkId, u64>, work: &WorkId) -> u64 {
+    bandwidth_ppm
+        .get(work)
+        .copied()
+        .unwrap_or(1_000_000)
+        .min(1_000_000)
 }
 
 /// Governance-tunable DAPR parameters.
@@ -223,45 +233,112 @@ pub enum DaprError {
 /// discount removes (`fee − target`) joins `unallocated`, alongside fees from
 /// users with no attributable value at all. The returned [`Payouts`] always
 /// satisfies `total_to_works() + unallocated == dataset.total_fees()`.
+///
+/// This is a thin wrapper around [`allocate_from_raw`]: it reduces each
+/// `UsageRow` to its `raw` weight (`value()·D(plays)`) — the last step that
+/// still needs the raw usage fields (minutes/price/region/plays) — and hands
+/// the rest of the computation (bandwidth discount, apportionment, reputation)
+/// to `allocate_from_raw`, preserving `dataset.usage`'s row order exactly so
+/// the two functions apportion identically.
 pub fn allocate(dataset: &Dataset, params: &DaprParams) -> Result<Payouts, DaprError> {
     let k = params.diminishing_k_ppm;
 
-    // Group usage rows by user so each user's fee is apportioned over just their
-    // own rows. `BTreeMap` keeps user iteration order stable and reproducible.
-    let mut rows_by_user: BTreeMap<&UserId, Vec<&UsageRow>> = BTreeMap::new();
+    // Reduce every usage row to its (user, work, raw) weight, in the same order
+    // as `dataset.usage`, so `allocate_from_raw`'s per-user row order — and thus
+    // its largest-remainder tie-breaks — matches this function's previous
+    // in-place behavior bit-for-bit.
+    let mut raw_rows = Vec::with_capacity(dataset.usage.len());
     for row in &dataset.usage {
+        let value = row.value()?; // minutes·price_ppm·region_ppm
+        let raw = mul_div(value, d_ppm(row.plays, k) as u128, 1_000_000)?;
+        raw_rows.push(RawRow {
+            user: row.user.clone(),
+            work: row.work.clone(),
+            raw,
+        });
+    }
+
+    allocate_from_raw(&dataset.tier_fees, &raw_rows, &dataset.bandwidth_ppm)
+}
+
+/// A single (user, work) usage row already reduced to its proven `raw` weight.
+///
+/// This is the post-ZK shape of a usage contribution: once minutes, plays,
+/// price and region have been folded into `raw` and proved off-chain, neither
+/// settlement nor [`allocate_from_raw`] need (or can) see those inputs again —
+/// only which user, which work, and how much undiminished-but-bandwidth-free
+/// weight it is worth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawRow {
+    /// Which subscriber generated this usage.
+    pub user: UserId,
+    /// Which work was consumed.
+    pub work: WorkId,
+    /// The row's diminishing-returns-discounted value: `minutes·price_ppm·
+    /// region_ppm·D(plays)` in [`allocate`]'s terms, or the equivalent proven
+    /// quantity when this row was produced by a ZK usage proof rather than
+    /// computed from raw usage fields. Bandwidth is deliberately *not* folded
+    /// in yet — [`allocate_from_raw`] applies it, since bandwidth is a
+    /// separately-supplied, per-epoch signal rather than part of the proof.
+    pub raw: u128,
+}
+
+/// Compute per-work payouts (and the reputation signal) from pre-computed
+/// per-row `raw` weights, rather than from raw usage fields.
+///
+/// This is the exact apportionment/bandwidth/reputation pass that lives inside
+/// [`allocate`], factored out so callers who only ever see a *proven* `raw`
+/// weight per `(user, work)` — as settlement does once usage is attested by a
+/// ZK proof, with minutes/plays/price/region no longer visible — can still run
+/// the identical payout math. For each row, `cred = raw · bandwidth_ppm(work)`
+/// applies the bandwidth-credibility discount (looked up via [`bw_ppm`]); per
+/// user, `rw_u = Σraw` and `sum_cred = Σcred` drive the same `target = fee ·
+/// (sum_cred/rw_u)`, largest-remainder `apportion`, and `unallocated`
+/// accounting as `allocate`. Reputation is accumulated from `cred` exactly as
+/// before. Row order within a user must match the caller's intended
+/// apportionment tie-breaks (see [`allocate`], which preserves `dataset.usage`
+/// order) since largest-remainder ties are broken by position.
+pub fn allocate_from_raw(
+    tier_fees: &BTreeMap<UserId, u128>,
+    rows: &[RawRow],
+    bandwidth_ppm: &BTreeMap<WorkId, u64>,
+) -> Result<Payouts, DaprError> {
+    // Group rows by user, preserving each row's relative order within its user
+    // (the order they appear in `rows`) so largest-remainder tie-breaks are
+    // reproducible. `BTreeMap` keeps user iteration order stable, matching
+    // `allocate`'s grouping of `dataset.usage`.
+    let mut rows_by_user: BTreeMap<&UserId, Vec<&RawRow>> = BTreeMap::new();
+    for row in rows {
         rows_by_user.entry(&row.user).or_default().push(row);
     }
 
     let mut per_work: BTreeMap<WorkId, u128> = BTreeMap::new();
     let mut unallocated: u128 = 0;
-    // Reputation accumulators: total bandwidth+diminishing-adjusted usage, and
-    // the set of distinct users, per work. Populated alongside the payout pass
-    // so the two signals are always computed from the same row data.
+    // Reputation accumulators: total bandwidth-adjusted usage, and the set of
+    // distinct users, per work. Populated alongside the payout pass so the two
+    // signals are always computed from the same row data.
     let mut rep_usage: BTreeMap<WorkId, u128> = BTreeMap::new();
     let mut rep_users: BTreeMap<WorkId, std::collections::BTreeSet<&UserId>> = BTreeMap::new();
 
     // Apportion every paying user's fee. A user with no usage rows (or only
-    // zero-value rows) has nowhere to send their fee, so it becomes `unallocated`.
-    for (user, fee) in &dataset.tier_fees {
-        let rows = rows_by_user.get(user).cloned().unwrap_or_default();
+    // zero-raw rows) has nowhere to send their fee, so it becomes `unallocated`.
+    for (user, fee) in tier_fees {
+        let user_rows = rows_by_user.get(user).cloned().unwrap_or_default();
 
-        // Compute each row's raw (diminished) and cred (bandwidth-discounted)
-        // value, and this user's totals of each, in one pass.
-        let mut creds = Vec::with_capacity(rows.len());
+        // Compute each row's cred (bandwidth-discounted raw) and this user's
+        // totals of raw and cred, in one pass.
+        let mut creds = Vec::with_capacity(user_rows.len());
         let mut rw_u: u128 = 0;
         let mut sum_cred: u128 = 0;
-        for row in &rows {
-            let value = row.value()?; // minutes·price_ppm·region_ppm
-            let raw = mul_div(value, d_ppm(row.plays, k) as u128, 1_000_000)?;
-            let cred = mul_div(raw, dataset.bw(&row.work) as u128, 1_000_000)?;
-            rw_u = rw_u.checked_add(raw).ok_or(DaprError::Overflow)?;
+        for row in &user_rows {
+            let cred = mul_div(row.raw, bw_ppm(bandwidth_ppm, &row.work) as u128, 1_000_000)?;
+            rw_u = rw_u.checked_add(row.raw).ok_or(DaprError::Overflow)?;
             sum_cred = sum_cred.checked_add(cred).ok_or(DaprError::Overflow)?;
             creds.push(cred);
 
-            // Reputation uses `cred` (bandwidth+diminishing adjusted usage),
-            // accumulated into a local before inserting to avoid re-borrowing
-            // the map while it is already borrowed by `entry`.
+            // Reputation uses `cred` (bandwidth-adjusted usage), accumulated
+            // into a local before inserting to avoid re-borrowing the map
+            // while it is already borrowed by `entry`.
             let updated = rep_usage.get(&row.work).copied().unwrap_or(0);
             let updated = updated.checked_add(cred).ok_or(DaprError::Overflow)?;
             rep_usage.insert(row.work.clone(), updated);
@@ -285,7 +362,7 @@ pub fn allocate(dataset: &Dataset, params: &DaprParams) -> Result<Payouts, DaprE
         // Split `target` across rows by cred, exactly (largest remainder), and
         // fold the results into the per-work totals.
         let shares = apportion(target, &creds, sum_cred)?;
-        for (row, share) in rows.iter().zip(shares) {
+        for (row, share) in user_rows.iter().zip(shares) {
             let entry = per_work.entry(row.work.clone()).or_insert(0);
             *entry = entry.checked_add(share).ok_or(DaprError::Overflow)?;
         }
@@ -551,6 +628,38 @@ mod h3_tests {
         assert_eq!(p.reputation["wBroad"].distinct_users, 2);
         assert_eq!(p.reputation["wDeep"].distinct_users, 1);
         assert!(p.reputation["wBroad"].weighted_usage > p.reputation["wDeep"].weighted_usage);
+    }
+
+    /// `allocate_from_raw`, fed hand-computed `raw` weights for the equivalent
+    /// usage rows, must reproduce `allocate`'s payouts exactly — proving the
+    /// post-ZK entry point (which never sees minutes/plays/price/region, only
+    /// the proven per-row `raw`) matches the pre-ZK path bit-for-bit.
+    #[test]
+    fn allocate_from_raw_matches_allocate() {
+        let d = ds(
+            &[("u1", 1_000_000)],
+            &[
+                ("u1", "wA", 60, 1_000_000, 1_000_000, 1),
+                ("u1", "wB", 20, 1_000_000, 1_000_000, 1),
+            ],
+        );
+        let want = allocate(&d, &DaprParams::default()).unwrap();
+        // raw = minutes·price·region·D(plays)/1e6; here plays=1 → D=1e6 → raw=value.
+        let rows = vec![
+            RawRow {
+                user: "u1".into(),
+                work: "wA".into(),
+                raw: 60u128 * 1_000_000 * 1_000_000,
+            },
+            RawRow {
+                user: "u1".into(),
+                work: "wB".into(),
+                raw: 20u128 * 1_000_000 * 1_000_000,
+            },
+        ];
+        let got = allocate_from_raw(&d.tier_fees, &rows, &d.bandwidth_ppm).unwrap();
+        assert_eq!(want.per_work, got.per_work);
+        assert_eq!(want.unallocated, got.unallocated);
     }
 }
 
