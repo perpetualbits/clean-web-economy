@@ -2,7 +2,8 @@
 pragma solidity ^0.8.24;
 
 import {Script} from "forge-std/Script.sol";
-import {AcceptAllVerifier} from "../contracts/AcceptAllVerifier.sol";
+import {Groth16Verifier} from "../contracts/Groth16Verifier.sol";
+import {CWEEpochBeacon} from "../contracts/CWEEpochBeacon.sol";
 import {CWEIdentity} from "../contracts/CWEIdentity.sol";
 import {CWERegistry} from "../contracts/CWERegistry.sol";
 import {CWETiers} from "../contracts/CWETiers.sol";
@@ -32,6 +33,7 @@ contract Deploy is Script {
     ///      stack-depth limit.
     struct Deployed {
         address verifier;
+        address beacon;
         address identity;
         address registry;
         address tiers;
@@ -57,8 +59,12 @@ contract Deploy is Script {
 
         vm.startBroadcast(deployerKey);
 
-        // The ZK seam: Phase 1 accepts every proof (decision D2).
-        d.verifier = address(new AcceptAllVerifier());
+        // The ZK seam: the real Groth16 verifier for the usage-proof circuit,
+        // baked with the devnet verifying key (decision D2 graduated in H2).
+        d.verifier = address(new Groth16Verifier());
+        // The epoch beacon: publishes the per-epoch key `K_epoch` that usage
+        // proofs bind to, so a proof can't be replayed across epochs.
+        d.beacon = address(new CWEEpochBeacon(d.owner));
         // The credential registry (H6): the trusted-issuer source of truth that
         // the registry and jury gate their verified-creator/juror checks on,
         // replacing the old per-contract owner allowlists.
@@ -68,7 +74,7 @@ contract Deploy is Script {
         // The tier table / payment intake, owned by `owner`.
         d.tiers = address(new CWETiers(d.owner));
         // The usage intake, checked by the verifier.
-        d.consumption = address(new CWEConsumption(AcceptAllVerifier(d.verifier)));
+        d.consumption = address(new CWEConsumption(Groth16Verifier(d.verifier)));
         // The payout ledger/pool, reading splits from the registry; only the
         // aggregator may commit epochs.
         d.payouts = address(new CWEPayouts(CWERegistry(d.registry), d.aggregator));
@@ -112,6 +118,7 @@ contract Deploy is Script {
         // returns the accumulated JSON so the last call holds the full object.
         string memory obj = "deployments";
         vm.serializeAddress(obj, "verifier", d.verifier);
+        vm.serializeAddress(obj, "beacon", d.beacon);
         vm.serializeAddress(obj, "identity", d.identity);
         vm.serializeAddress(obj, "registry", d.registry);
         vm.serializeAddress(obj, "tiers", d.tiers);
