@@ -37,6 +37,12 @@ Runs alongside the feature phases.
   capped and a strict loss under low bandwidth (`make -C ops antifraud-demo`) — see
   `docs/superpowers/specs/2026-07-22-full-dapr-antifraud-design.md`
 
+- [x] **H6 — Verifiable credentials / identity** ✅ — `CWEIdentity`: a rotatable issuer
+  set grants revocable, expiring credentials; the registry and jury gate on `isValid`
+  instead of owner allowlists (both removed); removing an issuer invalidates their
+  credentials (`make -C ops identity-demo`) — see
+  `docs/superpowers/specs/2026-07-24-verifiable-credentials-design.md`
+
 Still to come: ZK usage proofs, decentralised settlement, a storage layer (real
 bandwidth receipts), SSI/VC identity, tier capability tokens, an epoch
 beacon, discovery v2, and security/legal hardening. Details and spec mapping in
