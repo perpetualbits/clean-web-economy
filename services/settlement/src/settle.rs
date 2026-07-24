@@ -7,10 +7,10 @@
 //! plus a per-work inclusion proof — exactly what `CWEPayouts.commitEpoch` and
 //! `withdraw` consume.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
-use cwe_dapr::{allocate, DaprError, DaprParams, Dataset};
+use cwe_dapr::{allocate, allocate_from_raw, DaprError, DaprParams, Dataset, Payouts, RawRow};
 use cwe_wallet_zk::Bytes32;
 use serde::{Deserialize, Serialize};
 
@@ -91,18 +91,62 @@ pub fn settle(
     dataset: &Dataset,
     escrow_works: &BTreeSet<String>,
 ) -> Result<Settlement, SettleError> {
-    // 1. Compute per-work credits with the shared payout math. Governance
-    //    parameters are not yet plumbed through to settlement (H3 Task 2+), so
-    //    the neutral default (no diminishing-returns override) applies.
+    // Compute per-work credits with the shared payout math over the fully-opened
+    // dataset (minutes/plays/price/region visible), then route + commit them.
+    // Governance parameters are not yet plumbed through to settlement (H3 Task
+    // 2+), so the neutral default (no diminishing-returns override) applies.
     let payouts = allocate(dataset, &DaprParams::default())?;
+    finalize(epoch, payouts, escrow_works)
+}
 
+/// Settle an epoch directly from pre-computed per-row `raw` weights (the ZK
+/// path), rather than from a fully-opened [`Dataset`].
+///
+/// This is the proven-weights sibling of [`settle`]: once usage has been
+/// attested by a zero-knowledge proof, settlement never sees minutes/plays/
+/// price/region again — only the `(user, work, raw)` triples in `rows`. It runs
+/// [`allocate_from_raw`] over those triples (applying the same bandwidth
+/// discount, largest-remainder apportionment and reputation pass as [`settle`])
+/// and shares the identical routing/Merkle/escrow tail via [`finalize`], so the
+/// two entry points produce byte-identical settlements from equivalent inputs.
+///
+/// `rows` order matters: `allocate_from_raw` breaks largest-remainder ties by a
+/// row's position within its user, so the caller must supply a deterministic
+/// order (the chain layer sorts submissions by `(user, log index)`).
+pub fn settle_raw(
+    epoch: u64,
+    tier_fees: &BTreeMap<String, u128>,
+    rows: &[RawRow],
+    bandwidth_ppm: &BTreeMap<String, u64>,
+    escrow_works: &BTreeSet<String>,
+) -> Result<Settlement, SettleError> {
+    // Same apportionment math as `settle`, fed proven raw weights instead of
+    // raw usage fields; the routing/Merkle/escrow tail is shared below.
+    let payouts = allocate_from_raw(tier_fees, rows, bandwidth_ppm)?;
+    finalize(epoch, payouts, escrow_works)
+}
+
+/// The shared tail of both [`settle`] and [`settle_raw`]: take a computed
+/// [`Payouts`], route each credited work by recognition tier, and build the
+/// direct Merkle tree + proofs alongside the escrow entries.
+///
+/// Works whose hex id is in `escrow_works` (Tier 2, fingerprint-matched) go to
+/// escrow and carry no Merkle proof; all others (Tier 1, signed) go into the
+/// direct tree. Work ids must be 32-byte hex strings (the on-chain `bytes32`
+/// form); the caller guarantees this. Errors with [`SettleError::NoCredits`] if
+/// the payout produced no credited works.
+fn finalize(
+    epoch: u64,
+    payouts: Payouts,
+    escrow_works: &BTreeSet<String>,
+) -> Result<Settlement, SettleError> {
     // A settlement with no credited works is a caller/config error (e.g. an epoch
     // with no usage); surface it rather than committing an empty root.
     if payouts.per_work.is_empty() {
         return Err(SettleError::NoCredits);
     }
 
-    // 2. Partition credited works into direct (signed) and escrow (fingerprint).
+    // Partition credited works into direct (signed) and escrow (fingerprint).
     //    `per_work` is a BTreeMap, so iteration is sorted and deterministic; that
     //    same order indexes the direct Merkle tree.
     let mut direct_ids: Vec<Bytes32> = Vec::new();
@@ -128,7 +172,7 @@ pub fn settle(
         }
     }
 
-    // 3. Build the direct Merkle tree (or an empty root if everything escrowed).
+    // Build the direct Merkle tree (or an empty root if everything escrowed).
     let (root, entries, total_credits) = if direct_ids.is_empty() {
         // No signed credits this epoch: commit an empty root, all value is escrowed.
         (Bytes32([0u8; 32]), Vec::new(), 0u128)
@@ -179,6 +223,29 @@ mod tests {
     use crate::merkle::verify;
     use cwe_dapr::UsageRow;
     use std::collections::BTreeMap;
+
+    /// Build proven `RawRow`s (the ZK path's input) with valid 32-byte hex work
+    /// ids: one user, two works, mirroring `hex_dataset` in shape.
+    fn hex_raw_rows() -> (BTreeMap<String, u128>, Vec<RawRow>) {
+        let work_a = format!("0x{}", "aa".repeat(32));
+        let work_b = format!("0x{}", "bb".repeat(32));
+        let mut tier_fees = BTreeMap::new();
+        tier_fees.insert("u1".to_string(), 1_000_000u128);
+        // Distinct proven weights so apportionment splits unevenly.
+        let rows = vec![
+            RawRow {
+                user: "u1".to_string(),
+                work: work_a,
+                raw: 60,
+            },
+            RawRow {
+                user: "u1".to_string(),
+                work: work_b,
+                raw: 20,
+            },
+        ];
+        (tier_fees, rows)
+    }
 
     /// Build a dataset whose work ids are valid 32-byte hex values.
     fn hex_dataset() -> Dataset {
@@ -242,6 +309,48 @@ mod tests {
                 Some(&e.amount)
             );
         }
+    }
+
+    /// `settle_raw` (the proven-weights path) conserves the fee total and every
+    /// direct proof verifies against the committed root — the `settle_raw`
+    /// analogue of `settle_conserves_and_proofs_verify`.
+    #[test]
+    fn settle_raw_conserves_and_proofs_verify() {
+        let (tier_fees, rows) = hex_raw_rows();
+        let s = settle_raw(
+            3,
+            &tier_fees,
+            &rows,
+            &BTreeMap::new(), // neutral bandwidth: cred == raw
+            &BTreeSet::new(), // no escrow: everything pays directly
+        )
+        .unwrap();
+
+        // Total credited plus unallocated equals the fees paid (full conservation).
+        let sum_entries: u128 = s.entries.iter().map(|e| e.amount).sum();
+        assert_eq!(sum_entries, s.total_credits);
+        assert_eq!(s.total_credits + s.unallocated, 1_000_000);
+
+        // Each entry's proof reconstructs the committed root.
+        for e in &s.entries {
+            let leaf = leaf_hash(*e.work_id.as_bytes(), e.amount);
+            let proof: Vec<[u8; 32]> = e.proof.iter().map(|b| *b.as_bytes()).collect();
+            assert!(verify(&proof, *s.merkle_root.as_bytes(), leaf));
+        }
+    }
+
+    /// `settle_raw` and `settle` agree when fed equivalent inputs: raw weights
+    /// equal to the dataset rows' `value()·D(plays)` produce the same payouts.
+    /// Here each row has `plays = 1` (so `D = 1.0`) and unit price/region, so the
+    /// `raw` weight is just `minutes` — matching `hex_raw_rows`'s 60/20.
+    #[test]
+    fn settle_raw_matches_settle_on_equivalent_input() {
+        let (tier_fees, rows) = hex_raw_rows();
+        let raw = settle_raw(3, &tier_fees, &rows, &BTreeMap::new(), &BTreeSet::new()).unwrap();
+        let ds = settle(3, &hex_dataset(), &BTreeSet::new()).unwrap();
+        assert_eq!(raw.entries, ds.entries);
+        assert_eq!(raw.total_credits, ds.total_credits);
+        assert_eq!(raw.unallocated, ds.unallocated);
     }
 
     /// The Settlement serialises to JSON with string amounts and round-trips.

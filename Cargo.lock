@@ -1861,6 +1861,7 @@ dependencies = [
  "alloy",
  "cwe-dapr",
  "cwe-wallet-zk",
+ "cwe-zk-circuits",
  "hex",
  "serde",
  "serde_json",

@@ -283,6 +283,46 @@ pub fn prove(
     })
 }
 
+/// Recompute the public digest from only the ACTIVE (real) rows of a submission,
+/// padding to `MAX_WORKS` with the canonical inactive row internally.
+///
+/// This centralizes the padding convention so off-chain verifiers (e.g. the
+/// settlement job) that receive only a user's real rows — the pseudonyms,
+/// work ids and weights carried in the `ConsumptionSubmitted` event — can
+/// reproduce the exact `crate::poseidon::digest` a prover committed to, without
+/// re-implementing the "active first, canonical padding after" rule. The padding
+/// rows are built with [`padded_row`] under this SAME `k_epoch`, matching what
+/// [`prove`] does, so the recomputed digest agrees bit-for-bit with an honest
+/// bundle's `digest`.
+///
+/// # Errors
+/// Returns `ProveError::TooManyWorks` if `active.len() > MAX_WORKS`.
+pub fn digest_from_active(
+    epoch: u64,
+    tier: &[u8; 32],
+    k_epoch: &[u8; 32],
+    active: &[PublicRow],
+) -> Result<[u8; 32], ProveError> {
+    // More real rows than a single proof's fixed shape can carry is a hard error,
+    // mirroring `prove`'s own bound on `inputs`.
+    if active.len() > MAX_WORKS {
+        return Err(ProveError::TooManyWorks);
+    }
+
+    // The canonical padded row's public projection, derived under this `k_epoch`
+    // exactly as `prove` builds its padding — so the digest preimage matches.
+    let pad = public_row_of(&padded_row(k_epoch));
+
+    // Active rows first, then canonical padding out to the fixed `MAX_WORKS`
+    // shape the digest (and the verifying key) are defined over.
+    let mut rows: Vec<PublicRow> = active.to_vec();
+    while rows.len() < MAX_WORKS {
+        rows.push(pad.clone());
+    }
+
+    Ok(crate::poseidon::digest(epoch, tier, k_epoch, &rows))
+}
+
 /// Verify that `proof` is a valid Groth16 proof, under `vk`, of the
 /// single-public-input statement `digest`.
 ///
@@ -333,5 +373,59 @@ mod tests {
             bundle.rows[0].weight,
             crate::dr::weight_of(60, 2, 1_000_000, 1_000_000, 1_000_000)
         );
+    }
+
+    /// `digest_from_active` over just the active rows a fresh `prove` produced
+    /// reproduces that bundle's `digest` — i.e. the helper's internal padding
+    /// matches `prove`'s padding exactly. Uses two active rows so the active
+    /// slice is a strict prefix of the padded `MAX_WORKS` rows.
+    #[test]
+    fn digest_from_active_matches_prove() {
+        let (pk, _vk) = crate::setup::devnet_setup();
+        let epoch = 11u64;
+        let tier = [0x7c; 32];
+        let k_epoch = [0x33; 32];
+        let inputs = vec![
+            UsageRowInput {
+                work_id: [1u8; 32],
+                minutes: 60,
+                plays: 2,
+                salt: [9u8; 32],
+                price_ppm: 1_000_000,
+                region_ppm: 1_000_000,
+            },
+            UsageRowInput {
+                work_id: [2u8; 32],
+                minutes: 30,
+                plays: 1,
+                salt: [8u8; 32],
+                price_ppm: 900_000,
+                region_ppm: 1_000_000,
+            },
+        ];
+        let bundle = prove(&pk, epoch, &tier, &k_epoch, 1_000_000, &inputs).unwrap();
+
+        // The active rows are the first `inputs.len()` of the padded bundle rows.
+        let active = &bundle.rows[..inputs.len()];
+        let recomputed = digest_from_active(epoch, &tier, &k_epoch, active).unwrap();
+        assert_eq!(recomputed, bundle.digest);
+    }
+
+    /// More active rows than `MAX_WORKS` is rejected, just like `prove`.
+    #[test]
+    fn digest_from_active_rejects_overflow() {
+        let too_many = vec![
+            PublicRow {
+                work_id: [0u8; 32],
+                commitment: [0u8; 32],
+                pseudonym: [0u8; 32],
+                weight: 0,
+            };
+            MAX_WORKS + 1
+        ];
+        assert!(matches!(
+            digest_from_active(1, &[0u8; 32], &[0u8; 32], &too_many),
+            Err(ProveError::TooManyWorks)
+        ));
     }
 }

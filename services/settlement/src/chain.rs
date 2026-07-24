@@ -3,9 +3,28 @@
 //!
 //! This is where the concrete Ethereum stack (alloy) lives, kept apart from the
 //! pure [`crate::settle`] logic so the latter stays trivially testable. The live
-//! behaviour of this module is exercised by the WP7 end-to-end demo on Anvil.
+//! behaviour of this module is exercised end to end by the demos: the legacy
+//! demos drive DISCLOSURE mode; the zk-demo drives EVENT mode.
+//!
+//! # Two settlement modes
+//!
+//! Settlement runs in one of two modes, chosen at runtime by
+//! [`crate::config::Config::disclosure_path`]:
+//!
+//! * **Disclosure mode** (`disclosure_path.is_some()`): the legacy path used by
+//!   the four legacy demos (which keep AcceptAllVerifier on-chain). Usage is
+//!   opened out-of-band via a disclosure file; settlement runs the full DAPR
+//!   math over the opened minutes/plays/price/region. This is NOT the integrity
+//!   path — it does not re-verify anything cryptographically (see the note in
+//!   [`run_disclosure`]).
+//! * **Event mode** (`disclosure_path.is_none()`): the ZK path. Each submission
+//!   carries proven per-work weights and a Poseidon digest in its event; the
+//!   settlement job recomputes that digest from the event's own rows and rejects
+//!   any submission whose recomputed digest does not match — the off-chain half
+//!   of the trust chain — then pays from the proven weights via
+//!   [`crate::settle::settle_raw`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::str::FromStr;
 
@@ -17,11 +36,13 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
 use alloy::sol_types::SolEvent;
 
-use cwe_dapr::{Dataset, UsageRow};
+use cwe_dapr::{Dataset, RawRow, UsageRow};
+use cwe_wallet_zk::Bytes32;
+use cwe_zk_circuits::prove::{digest_from_active, PublicRow};
 
 use crate::config::Config;
 use crate::disclosure::Disclosure;
-use crate::settle::{settle, Settlement};
+use crate::settle::{settle, settle_raw, Settlement};
 
 // Minimal on-chain interfaces the settlement job touches. `#[sol(rpc)]` generates
 // typed contract bindings (constructors, call builders, event decoders).
@@ -37,8 +58,18 @@ sol! {
     #[sol(rpc)]
     contract Consumption {
         event ConsumptionSubmitted(
-            address indexed user, uint256 indexed epoch, bytes32 tierId, bytes32[] commitments
+            address indexed user,
+            uint256 indexed epoch,
+            bytes32 tierId,
+            bytes32 digest,
+            bytes32[] pseudonyms,
+            bytes32[] workIds,
+            uint256[] weights
         );
+    }
+    #[sol(rpc)]
+    contract Beacon {
+        function keyFor(uint256 epoch) external view returns (bytes32);
     }
     #[sol(rpc)]
     contract Payouts {
@@ -55,9 +86,11 @@ type BoxErr = Box<dyn Error + Send + Sync>;
 
 /// Run a full settlement against the configured chain and write the proofs file.
 ///
-/// Steps: connect → read this epoch's submissions → open and verify commitments
-/// from the disclosure file → assemble the DAPR dataset → settle → commit the root
-/// on-chain → persist the withdrawal proofs.
+/// Connects, computes the [`Settlement`] via the mode selected by
+/// [`Config::disclosure_path`] (see the module docs), commits the direct root on
+/// `CWEPayouts`, routes any escrowed credit to `CWEEscrow`, and persists the
+/// withdrawal proofs. The compute step differs by mode; the commit/escrow/write
+/// tail is shared.
 pub async fn run(cfg: &Config) -> Result<Settlement, BoxErr> {
     // Build a provider that signs with the aggregator key.
     let signer = PrivateKeySigner::from_str(&cfg.private_key)?;
@@ -65,97 +98,18 @@ pub async fn run(cfg: &Config) -> Result<Settlement, BoxErr> {
         .wallet(signer)
         .connect_http(cfg.rpc_url.parse()?);
 
-    // Resolve the contract addresses from the deployments map.
-    let tiers_addr = Address::from_str(&cfg.deployments.tiers)?;
-    let registry_addr = Address::from_str(&cfg.deployments.registry)?;
-    let consumption_addr = Address::from_str(&cfg.deployments.consumption)?;
-    let payouts_addr = Address::from_str(&cfg.deployments.payouts)?;
+    // Compute the settlement via the runtime-selected mode. Disclosure mode is
+    // the legacy path; event mode is the proven-weights ZK path.
+    let settlement = match &cfg.disclosure_path {
+        Some(path) => run_disclosure(cfg, &provider, path).await?,
+        None => run_events(cfg, &provider).await?,
+    };
 
-    let tiers = Tiers::new(tiers_addr, &provider);
-    let registry = Registry::new(registry_addr, &provider);
-    let payouts = Payouts::new(payouts_addr, &provider);
-
-    // Load the users' openings for this epoch.
-    let disclosure = Disclosure::load(&cfg.disclosure_path)?;
-
-    // Pull every ConsumptionSubmitted log for this epoch. `epoch` is the second
-    // indexed topic, so filter on topic2.
-    let filter = Filter::new()
-        .address(consumption_addr)
-        .event_signature(Consumption::ConsumptionSubmitted::SIGNATURE_HASH)
-        .topic2(U256::from(cfg.epoch))
-        .from_block(0);
-    let logs = provider.get_logs(&filter).await?;
-
-    // Assemble the DAPR dataset from the submissions + verified openings.
-    let mut tier_fees: BTreeMap<String, u128> = BTreeMap::new();
-    let mut usage: Vec<UsageRow> = Vec::new();
-
-    for log in &logs {
-        let event = Consumption::ConsumptionSubmitted::decode_log(&log.inner)?;
-        let user_hex = format!("{:#x}", event.user); // lowercase 0x address
-        let tier_id = event.tierId;
-
-        // Look up the tier fee this user paid.
-        let fee = tiers.feeOf(tier_id).call().await?;
-        tier_fees.insert(user_hex.clone(), u128::try_from(fee)?);
-
-        // The set of commitments this user actually submitted on-chain.
-        let submitted: Vec<[u8; 32]> = event.commitments.iter().map(|c| c.0).collect();
-
-        // Turn each disclosed opening into a usage row — but only if its commitment
-        // matches one the user submitted, so nobody can inflate their own usage.
-        if let Some(openings) = disclosure.for_user(&user_hex) {
-            for opening in openings {
-                let commit = *opening.commit().as_bytes();
-                if !submitted.contains(&commit) {
-                    eprintln!(
-                        "warning: opening for work {} from {} has no matching on-chain commitment; skipping",
-                        opening.work_id, user_hex
-                    );
-                    continue;
-                }
-                // Price comes from the registry; region is 1.0 in Phase 1.
-                let price = registry
-                    .pricePerMinOf(B256::from(opening.work_id.0))
-                    .call()
-                    .await?;
-                usage.push(UsageRow {
-                    user: user_hex.clone(),
-                    work: opening.work_id.to_string(),
-                    minutes: opening.minutes,
-                    price_ppm: u64::try_from(price)?,
-                    region_ppm: 1_000_000,
-                    // The opening's commitment binds `plays`, so this is exactly
-                    // what the user committed to on-chain, not a stand-in value.
-                    plays: opening.plays,
-                });
-            }
-        }
-    }
-
-    // Works the client recognized by fingerprint (Tier 2) are escrowed; the rest
-    // (Tier 1, signed) pay directly. The disclosure file declares the escrow set.
-    let escrow_works: std::collections::BTreeSet<String> = disclosure
-        .escrow_works
-        .iter()
-        .map(|w| w.to_string())
-        .collect();
-
-    // Compute the settlement, split into direct (Merkle) and escrow buckets.
-    // Bandwidth credibility is not yet wired into the chain layer (H3 Task 2+),
-    // so every work is neutral for now.
-    let settlement = settle(
-        cfg.epoch,
-        &Dataset {
-            tier_fees,
-            usage,
-            bandwidth_ppm: BTreeMap::new(),
-        },
-        &escrow_works,
-    )?;
+    // ---- Shared commit / escrow / write tail (mode-independent) ----
 
     // Commit the direct (signed) epoch root to CWEPayouts and wait for it to land.
+    let payouts_addr = Address::from_str(&cfg.deployments.payouts)?;
+    let payouts = Payouts::new(payouts_addr, &provider);
     let pending = payouts
         .commitEpoch(
             U256::from(settlement.epoch),
@@ -211,4 +165,213 @@ pub async fn run(cfg: &Config) -> Result<Settlement, BoxErr> {
     eprintln!("wrote {}", cfg.out_path.display());
 
     Ok(settlement)
+}
+
+/// Fetch every `ConsumptionSubmitted` log for the configured epoch, in canonical
+/// chain order (ascending block number, then log index — the order `get_logs`
+/// returns). Both modes settle from this same log set; event mode additionally
+/// relies on this deterministic order so `allocate_from_raw`'s largest-remainder
+/// tie-breaks are reproducible.
+async fn epoch_logs<P: Provider>(
+    cfg: &Config,
+    provider: &P,
+) -> Result<Vec<alloy::rpc::types::Log>, BoxErr> {
+    let consumption_addr = Address::from_str(&cfg.deployments.consumption)?;
+    // `epoch` is the second indexed topic, so filter on topic2.
+    let filter = Filter::new()
+        .address(consumption_addr)
+        .event_signature(Consumption::ConsumptionSubmitted::SIGNATURE_HASH)
+        .topic2(U256::from(cfg.epoch))
+        .from_block(0);
+    Ok(provider.get_logs(&filter).await?)
+}
+
+/// Disclosure mode (legacy): assemble a fully-opened DAPR [`Dataset`] from the
+/// submissions plus the disclosure file, then [`settle`].
+///
+/// This is the AcceptAllVerifier path used by the four legacy demos. The
+/// `ConsumptionSubmitted` event no longer carries the per-row commitments, so the
+/// old "recompute each opening's commitment and check it against the on-chain
+/// commitments" step is GONE — disclosure mode therefore trusts the disclosure
+/// file's openings as-is and is NOT an integrity path. Cryptographic
+/// re-verification of usage lives entirely in event mode ([`run_events`]); this
+/// mode exists only to keep the legacy demos green while the ZK path ships.
+async fn run_disclosure<P: Provider>(
+    cfg: &Config,
+    provider: &P,
+    disclosure_path: &std::path::Path,
+) -> Result<Settlement, BoxErr> {
+    // Resolve the contracts this mode reads.
+    let tiers_addr = Address::from_str(&cfg.deployments.tiers)?;
+    let registry_addr = Address::from_str(&cfg.deployments.registry)?;
+    let tiers = Tiers::new(tiers_addr, provider);
+    let registry = Registry::new(registry_addr, provider);
+
+    // Load the users' openings for this epoch.
+    let disclosure = Disclosure::load(disclosure_path)?;
+
+    let logs = epoch_logs(cfg, provider).await?;
+
+    // Assemble the DAPR dataset from the submissions + disclosed openings.
+    let mut tier_fees: BTreeMap<String, u128> = BTreeMap::new();
+    let mut usage: Vec<UsageRow> = Vec::new();
+
+    for log in &logs {
+        let event = Consumption::ConsumptionSubmitted::decode_log(&log.inner)?;
+        let user_hex = format!("{:#x}", event.user); // lowercase 0x address
+        let tier_id = event.tierId;
+
+        // Look up the tier fee this user paid.
+        let fee = tiers.feeOf(tier_id).call().await?;
+        tier_fees.insert(user_hex.clone(), u128::try_from(fee)?);
+
+        // Turn each disclosed opening into a usage row. NOTE: the event no longer
+        // carries commitments, so there is nothing on-chain to check the opening
+        // against — disclosure mode accepts the file's openings verbatim (see the
+        // fn doc: this is the legacy AcceptAllVerifier path, not the integrity path).
+        if let Some(openings) = disclosure.for_user(&user_hex) {
+            for opening in openings {
+                // Price comes from the registry; region is 1.0 in Phase 1.
+                let price = registry
+                    .pricePerMinOf(B256::from(opening.work_id.0))
+                    .call()
+                    .await?;
+                usage.push(UsageRow {
+                    user: user_hex.clone(),
+                    work: opening.work_id.to_string(),
+                    minutes: opening.minutes,
+                    price_ppm: u64::try_from(price)?,
+                    region_ppm: 1_000_000,
+                    // The opening carries `plays` directly; carried through as-is.
+                    plays: opening.plays,
+                });
+            }
+        }
+    }
+
+    // Works the client recognized by fingerprint (Tier 2) are escrowed; the rest
+    // (Tier 1, signed) pay directly. The disclosure file declares the escrow set.
+    let escrow_works: BTreeSet<String> = disclosure
+        .escrow_works
+        .iter()
+        .map(|w| w.to_string())
+        .collect();
+
+    // Compute the settlement, split into direct (Merkle) and escrow buckets.
+    // Bandwidth credibility is not yet wired into the chain layer (H3 Task 2+),
+    // so every work is neutral for now.
+    Ok(settle(
+        cfg.epoch,
+        &Dataset {
+            tier_fees,
+            usage,
+            bandwidth_ppm: BTreeMap::new(),
+        },
+        &escrow_works,
+    )?)
+}
+
+/// Event mode (the ZK path): pay from the proven per-work weights carried in each
+/// `ConsumptionSubmitted` event, after re-verifying each submission's digest.
+///
+/// For each submission the job:
+/// 1. reads the epoch's pseudonym key `k_epoch = Beacon::keyFor(epoch)`;
+/// 2. rebuilds the submission's active [`PublicRow`]s from the event's
+///    `(pseudonyms, workIds, weights)` (the per-row `commitment` is not part of
+///    the digest preimage, so `[0;32]` is used);
+/// 3. recomputes the expected digest with
+///    [`cwe_zk_circuits::prove::digest_from_active`] (which pads to `MAX_WORKS`
+///    with the canonical padding under this `k_epoch`) and **rejects the whole
+///    submission** if it does not match the event's `digest` — this is the
+///    off-chain half of the trust chain (the on-chain Groth16 verifier binds the
+///    digest to a valid proof; this binds the digest to the paid weights);
+/// 4. turns each accepted row into a [`RawRow`] paid via [`settle_raw`].
+///
+/// **Row ordering:** submissions are processed in canonical chain order (see
+/// [`epoch_logs`]) and, within a submission, in the event's `workIds` order.
+/// Since a user may submit at most once per epoch, this yields a single,
+/// fully-deterministic per-user row sequence, which `allocate_from_raw` needs for
+/// reproducible largest-remainder tie-breaks.
+///
+/// **Escrow:** escrow is EMPTY for cycle-1 — every proven work pays directly.
+/// Registry-derived escrow-tier routing in event mode (mapping fingerprint-tier
+/// works to escrow from on-chain state rather than a disclosure file) is a
+/// documented follow-on.
+async fn run_events<P: Provider>(cfg: &Config, provider: &P) -> Result<Settlement, BoxErr> {
+    // Resolve the contracts this mode reads: tier fees and the epoch beacon.
+    let tiers_addr = Address::from_str(&cfg.deployments.tiers)?;
+    let beacon_addr = Address::from_str(&cfg.deployments.beacon)?;
+    let tiers = Tiers::new(tiers_addr, provider);
+    let beacon = Beacon::new(beacon_addr, provider);
+
+    // The per-epoch pseudonym key every submission's digest is bound to.
+    let k_epoch: [u8; 32] = beacon.keyFor(U256::from(cfg.epoch)).call().await?.0;
+
+    let logs = epoch_logs(cfg, provider).await?;
+
+    // Accumulate proven rows and the fees of ACCEPTED submissions only, so a
+    // rejected submission neither pays nor inflates `unallocated`.
+    let mut tier_fees: BTreeMap<String, u128> = BTreeMap::new();
+    let mut rows: Vec<RawRow> = Vec::new();
+
+    for log in &logs {
+        let event = Consumption::ConsumptionSubmitted::decode_log(&log.inner)?;
+        let user_hex = format!("{:#x}", event.user); // lowercase 0x address
+        let tier_bytes: [u8; 32] = event.tierId.0;
+
+        // Rebuild the active public rows exactly as they entered the digest
+        // preimage: pseudonym, work_id and weight per row (commitment is not
+        // hashed, so a zero placeholder is fine here).
+        let n = event.workIds.len();
+        // Defensive: the three parallel arrays must have equal length; a
+        // malformed submission with mismatched lengths is rejected outright.
+        if event.pseudonyms.len() != n || event.weights.len() != n {
+            eprintln!(
+                "warning: submission from {user_hex} has mismatched array lengths; rejecting"
+            );
+            continue;
+        }
+        let mut active: Vec<PublicRow> = Vec::with_capacity(n);
+        for i in 0..n {
+            active.push(PublicRow {
+                work_id: event.workIds[i].0,
+                commitment: [0u8; 32], // not part of the digest preimage
+                pseudonym: event.pseudonyms[i].0,
+                weight: u128::try_from(event.weights[i])?,
+            });
+        }
+
+        // Recompute the digest over the active rows (padded internally to
+        // MAX_WORKS) and reject the submission if it disagrees with the event's.
+        let expected = digest_from_active(cfg.epoch, &tier_bytes, &k_epoch, &active)?;
+        if expected != event.digest.0 {
+            eprintln!(
+                "warning: submission from {user_hex} failed digest re-verification; rejecting"
+            );
+            continue;
+        }
+
+        // Accepted: record the tier fee this user paid and one RawRow per work.
+        let fee = tiers.feeOf(event.tierId).call().await?;
+        tier_fees.insert(user_hex.clone(), u128::try_from(fee)?);
+        for row in &active {
+            rows.push(RawRow {
+                user: user_hex.clone(),
+                // Canonical lowercase 0x-hex form of the work id, matching what
+                // `settle` expects for its Merkle leaves.
+                work: Bytes32(row.work_id).to_string(),
+                raw: row.weight,
+            });
+        }
+    }
+
+    // Pay from the proven weights. Bandwidth is neutral (empty map) and escrow is
+    // empty for cycle-1 — every proven work pays directly (see the fn doc).
+    Ok(settle_raw(
+        cfg.epoch,
+        &tier_fees,
+        &rows,
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+    )?)
 }

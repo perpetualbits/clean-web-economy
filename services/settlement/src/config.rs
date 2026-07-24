@@ -19,6 +19,8 @@ pub struct Deployments {
     pub payouts: String,
     /// The `CWEEscrow` address (for committing fingerprint-matched credit).
     pub escrow: String,
+    /// The `CWEEpochBeacon` address (for reading `keyFor(epoch)` in event mode).
+    pub beacon: String,
 }
 
 /// Everything the settlement run needs.
@@ -30,8 +32,11 @@ pub struct Config {
     pub private_key: String,
     /// The epoch to settle.
     pub epoch: u64,
-    /// Path to the disclosure file with the users' openings.
-    pub disclosure_path: PathBuf,
+    /// Path to the disclosure file with the users' openings. `Some` selects the
+    /// legacy disclosure mode (the four legacy demos, AcceptAllVerifier); `None`
+    /// selects the proven-weights event mode (the ZK path). The chain layer
+    /// branches on this to pick which settlement path to run.
+    pub disclosure_path: Option<PathBuf>,
     /// Where to write the withdrawal-proofs output.
     pub out_path: PathBuf,
     /// The deployed contract addresses.
@@ -43,8 +48,10 @@ impl Config {
     ///
     /// Recognised variables (with defaults suited to a local Anvil devnet):
     /// `RPC_URL`, `PRIVATE_KEY` (required), `EPOCH` (required), `DISCLOSURE`
-    /// (required), `DEPLOYMENTS` (default `chain/deployments/localhost.json`),
-    /// `OUT` (default `chain/out/epoch-<n>-proofs.json`).
+    /// (OPTIONAL — its presence selects legacy disclosure mode; its absence
+    /// selects proven-weights event mode), `DEPLOYMENTS` (default
+    /// `chain/deployments/localhost.json`), `OUT` (default
+    /// `chain/out/epoch-<n>-proofs.json`).
     pub fn from_env() -> Result<Config, ConfigError> {
         // Default RPC points at a local Anvil node.
         let rpc_url =
@@ -54,7 +61,10 @@ impl Config {
         let epoch: u64 = req("EPOCH")?
             .parse()
             .map_err(|_| ConfigError::Invalid("EPOCH".into()))?;
-        let disclosure_path = PathBuf::from(req("DISCLOSURE")?);
+        // `DISCLOSURE` is now the MODE SELECTOR: set → legacy disclosure mode,
+        // unset → proven-weights event mode (the ZK path). It is no longer
+        // required, so a missing value is `None`, not an error.
+        let disclosure_path = std::env::var("DISCLOSURE").ok().map(PathBuf::from);
 
         // The deployments file is read to discover contract addresses.
         let deployments_path = std::env::var("DEPLOYMENTS")
