@@ -4,8 +4,10 @@
 # usage is well-formed, range-bounded, diminishing-returns-capped,
 # epoch-bound, and per-work unique, without revealing the underlying per-work
 # play counts — only a single Poseidon digest is exposed on-chain. It links
-# `cwe-dapr` (the diminishing-returns math it must mirror in-circuit) and
-# `cwe-wallet-zk` (the commitment/session types it proves statements about).
+# `cwe-dapr` (the diminishing-returns math it must mirror in-circuit). Note:
+# `cwe-wallet-zk` depends on this crate's `poseidon::commitment` (not the other
+# way around) so a commitment made in the wallet and one proved in-circuit
+# agree bit-for-bit; a dependency back onto `cwe-wallet-zk` would be cyclic.
 [package]
 name = "cwe-zk-circuits"
 version.workspace = true
@@ -25,7 +27,6 @@ ark-snark.workspace = true
 ark-serialize.workspace = true
 ark-std.workspace = true
 cwe-dapr = { path = "../../sims" }
-cwe-wallet-zk = { path = "../wallet-zk" }
 hex.workspace = true
 
 [dev-dependencies]

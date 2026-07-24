@@ -1,27 +1,29 @@
 //! Usage commitments (plan decision D2).
 //!
 //! Instead of revealing raw usage on-chain, a user submits, per work, a *hiding
-//! commitment* `keccak256(work_id ‖ minutes ‖ plays ‖ salt)`. During settlement
+//! commitment* `Poseidon(work_id, minutes, plays, salt)`. During settlement
 //! the trusted aggregator receives the openings (the `(work_id, minutes, plays,
 //! salt)` quadruples) out-of-band and recomputes each commitment to confirm it
 //! matches what was submitted. The random salt stops anyone from brute-forcing
 //! `minutes`/`plays` from the commitment, and lets the user later reveal a
 //! commitment if arbitration ever needs it.
 //!
-//! Encoding: the pre-image is the tight concatenation of four 32-byte words —
-//! the work id, minutes as a big-endian integer, plays as a big-endian integer,
-//! and the salt (128 bytes total). Minutes and plays each occupy a full 32-byte
-//! word so the layout matches Ethereum's `abi.encodePacked` convention, keeping
-//! the door open for an on-chain / in-circuit check later. Binding `plays` (not
-//! just `minutes`) into the commitment means a user cannot later claim a
-//! different play count for the same disclosed usage than the one they
-//! committed to on-chain.
+//! Hashing: the commitment is the single Poseidon sponge hash of four field
+//! elements — `work_id` and `salt` reduced into the field, and `minutes`/
+//! `plays` lifted canonically — computed by [`cwe_zk_circuits::poseidon`].
+//! Poseidon (rather than keccak256) is what makes the commitment provable
+//! *inside* the H2 usage-proof circuit: the same hash, with the same
+//! parameters, runs both natively here and as an in-circuit gadget, so a
+//! commitment made by the wallet and one proved by the circuit agree
+//! bit-for-bit. Binding `plays` (not just `minutes`) into the commitment means
+//! a user cannot later claim a different play count for the same disclosed
+//! usage than the one they committed to on-chain.
 
 use serde::{Deserialize, Serialize};
 
-use crate::{keccak256, Bytes32};
+use crate::Bytes32;
 
-/// A usage commitment: the keccak256 of an [`Opening`]'s pre-image.
+/// A usage commitment: the Poseidon hash of an [`Opening`]'s four field elements.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct Commitment(pub Bytes32);
 
@@ -60,19 +62,18 @@ impl Opening {
 
     /// Compute the commitment this opening hashes to.
     ///
-    /// Lays out the 128-byte pre-image (work id, 32-byte big-endian minutes,
-    /// 32-byte big-endian plays, salt) and hashes it with keccak256.
+    /// Delegates to [`cwe_zk_circuits::poseidon::commitment`] — the canonical
+    /// Poseidon hash of `(work_id, minutes, plays, salt)` that the H2 circuit
+    /// and prover also use, so a commitment made here is exactly what the
+    /// circuit can later prove a statement about.
     pub fn commit(&self) -> Commitment {
-        let mut preimage = [0u8; 128];
-        // Bytes 0..32: the work id.
-        preimage[0..32].copy_from_slice(self.work_id.as_bytes());
-        // Bytes 32..64: minutes as a big-endian 256-bit word (value in the low 8 bytes).
-        preimage[56..64].copy_from_slice(&self.minutes.to_be_bytes());
-        // Bytes 64..96: plays as a big-endian 256-bit word (value in the low 8 bytes).
-        preimage[88..96].copy_from_slice(&self.plays.to_be_bytes());
-        // Bytes 96..128: the salt.
-        preimage[96..128].copy_from_slice(self.salt.as_bytes());
-        Commitment(Bytes32(keccak256(&preimage)))
+        let digest = cwe_zk_circuits::poseidon::commitment(
+            self.work_id.as_bytes(),
+            self.minutes,
+            self.plays,
+            self.salt.as_bytes(),
+        );
+        Commitment(Bytes32(digest))
     }
 
     /// Check that this opening reproduces `commitment`.
@@ -145,5 +146,15 @@ mod tests {
         assert_eq!(o, back);
         // Sanity-check the human-readable hex encoding is present.
         assert!(json.contains("0xabab"));
+    }
+
+    /// The commitment matches the canonical Poseidon commitment the ZK circuit
+    /// and prover use, byte-for-byte — this is what makes `Opening::commit()` a
+    /// valid stand-in for the circuit's public commitment.
+    #[test]
+    fn commit_matches_zk_poseidon() {
+        let o = Opening::new(Bytes32([1; 32]), 60, 2, Bytes32([9; 32]));
+        let expected = cwe_zk_circuits::poseidon::commitment(&[1u8; 32], 60, 2, &[9u8; 32]);
+        assert_eq!(o.commit().0 .0, expected);
     }
 }

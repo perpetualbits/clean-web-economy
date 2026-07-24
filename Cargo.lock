@@ -1872,6 +1872,7 @@ dependencies = [
 name = "cwe-wallet-zk"
 version = "0.1.0"
 dependencies = [
+ "cwe-zk-circuits",
  "hex",
  "serde",
  "serde_json",
@@ -1894,7 +1895,6 @@ dependencies = [
  "ark-snark",
  "ark-std 0.5.0",
  "cwe-dapr",
- "cwe-wallet-zk",
  "hex",
 ]
 

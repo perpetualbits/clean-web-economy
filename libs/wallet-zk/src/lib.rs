@@ -3,7 +3,8 @@
 //! This crate holds the **portable, chain-agnostic** primitives that the browser
 //! extension (WP6) and the off-chain settlement job (WP5) both depend on:
 //!
-//! * [`commit`] — keccak256 usage commitments and their openings (decision D2).
+//! * [`commit`] — Poseidon usage commitments and their openings (decision D2),
+//!   matching the H2 zero-knowledge usage-proof circuit bit-for-bit.
 //! * [`zk`] — the `generate_proof`/`verify_proof` seam that real ZK circuits
 //!   replace later; Phase 1 fills it with a structural `none-v0` placeholder.
 //! * [`session`] — epoch-aware accrual of listening time (start / add-time /
@@ -18,8 +19,10 @@
 //! stays free of network and heavy crypto dependencies so it compiles cleanly to
 //! WebAssembly.
 //!
-//! keccak256 is used throughout (matching the on-chain hash) so a commitment made
-//! here and opened during settlement agree bit-for-bit.
+//! keccak256 (below) is kept for callers outside the commitment path — the
+//! settlement job's Merkle leaves and the extension's exact-match content id —
+//! where matching the on-chain/EVM hash still matters. The usage commitment
+//! itself now uses Poseidon; see [`commit`].
 
 #![forbid(unsafe_code)] // hashing, accounting, and serialisation only — no unsafe
 
