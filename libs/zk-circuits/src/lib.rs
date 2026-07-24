@@ -7,6 +7,7 @@
 
 pub mod circuit;
 pub mod dr;
+pub mod evm;
 pub mod field;
 pub mod poseidon;
 pub mod prove;
