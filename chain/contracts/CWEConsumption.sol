@@ -72,7 +72,12 @@ contract CWEConsumption is ICWEConsumption {
         if (_submitted[epoch][msg.sender]) revert AlreadySubmitted(epoch, msg.sender);
 
         // Run the proof through the verifier seam (accept-all in Phase 1).
-        if (!verifier.verify(workCommitments, proof)) revert ProofRejected();
+        // The verifier now takes a single public-input digest; the real binding
+        // of that digest to these commitments is wired in Task 14. For now we
+        // fold the commitments into one digest so the seam compiles and the
+        // accept-all/reject paths behave unchanged.
+        bytes32 digest = keccak256(abi.encode(workCommitments));
+        if (!verifier.verify(digest, proof)) revert ProofRejected();
 
         // Record the submission before emitting (effects before the log).
         _submitted[epoch][msg.sender] = true;

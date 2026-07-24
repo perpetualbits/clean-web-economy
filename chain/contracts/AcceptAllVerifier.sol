@@ -14,7 +14,7 @@ contract AcceptAllVerifier is IProofVerifier {
     /// @inheritdoc IProofVerifier
     /// @dev Always returns true. Parameters are unnamed to document that they are
     ///      intentionally ignored in Phase 1.
-    function verify(bytes32[] calldata, bytes calldata) external pure returns (bool) {
+    function verify(bytes32, bytes calldata) external pure returns (bool) {
         return true;
     }
 }

@@ -26,5 +26,9 @@ remappings = [
 ]
 
 # Foundry sandboxes filesystem access by default. The deploy script writes the
-# address map here, so grant read-write to the deployments directory only.
-fs_permissions = [{ access = "read-write", path = "./deployments" }]
+# address map here, so grant read-write to the deployments directory; the
+# verifier test reads its proof fixture from `test/fixtures`, so grant that read.
+fs_permissions = [
+    { access = "read-write", path = "./deployments" },
+    { access = "read", path = "./test/fixtures" },
+]

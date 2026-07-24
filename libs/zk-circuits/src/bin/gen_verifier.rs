@@ -94,6 +94,8 @@ fn render(
         r#"// SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity ^0.8.24;
 
+import {{IProofVerifier}} from "./interfaces/IProofVerifier.sol";
+
 /// @title Groth16Verifier
 /// @notice On-chain Groth16 (BN254) verifier for the CWE usage-proof circuit.
 /// @dev GENERATED FILE — produced by `libs/zk-circuits/src/bin/gen_verifier.rs`
@@ -110,7 +112,7 @@ pragma solidity ^0.8.24;
 ///      G2 points follow the `alt_bn128` precompile layout `[x.c1, x.c0]` /
 ///      `[y.c1, y.c0]` (imaginary Fq2 limb first). The proof fixture in
 ///      `chain/test/fixtures/zk_proof.json` uses the identical encoding.
-contract Groth16Verifier {{
+contract Groth16Verifier is IProofVerifier {{
     /// @dev BN254 base field modulus `q`, used to negate a G1 point on-curve.
     uint256 internal constant Q =
         21888242871839275222246405745257275088696311157297823662689037894645226208583;
@@ -149,7 +151,7 @@ contract Groth16Verifier {{
     ///        — the proof points A (G1), B (G2, `[c1, c0]` limb order) and C
     ///        (G1), exactly as written to `chain/test/fixtures/zk_proof.json`.
     /// @return True iff the proof satisfies the Groth16 pairing equation.
-    function verify(bytes32 digest, bytes calldata proof) public view returns (bool) {{
+    function verify(bytes32 digest, bytes calldata proof) public view override returns (bool) {{
         // Decode the proof into its three curve points.
         (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) =
             abi.decode(proof, (uint256[2], uint256[2][2], uint256[2]));

@@ -8,7 +8,7 @@ import {IProofVerifier} from "../contracts/interfaces/IProofVerifier.sol";
 
 /// @notice A verifier that rejects every proof, used to exercise the reject path.
 contract RejectingVerifier is IProofVerifier {
-    function verify(bytes32[] calldata, bytes calldata) external pure returns (bool) {
+    function verify(bytes32, bytes calldata) external pure returns (bool) {
         return false;
     }
 }
