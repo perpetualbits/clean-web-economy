@@ -22,14 +22,23 @@ contract CWEConsumption is ICWEConsumption {
     /// @dev epoch => user => whether they have already submitted this epoch.
     mapping(uint256 => mapping(address => bool)) private _submitted;
 
-    /// @notice Emitted on every accepted submission; carries the commitments that
-    ///         the off-chain aggregator consumes.
+    /// @notice Emitted on every accepted submission; carries the ZK proof's
+    ///         public outputs that the off-chain aggregator (WP5) consumes.
     /// @param user The submitting user.
     /// @param epoch The epoch the submission belongs to.
     /// @param tierId The user's tier at submission time.
-    /// @param commitments The per-work usage commitments.
+    /// @param digest The public-input digest the proof was verified against.
+    /// @param pseudonyms The per-work pseudonymous identifiers proven by the circuit.
+    /// @param workIds The per-work identifiers the usage is attributed to.
+    /// @param weights The per-work usage weights proven by the circuit.
     event ConsumptionSubmitted(
-        address indexed user, uint256 indexed epoch, bytes32 tierId, bytes32[] commitments
+        address indexed user,
+        uint256 indexed epoch,
+        bytes32 tierId,
+        bytes32 digest,
+        bytes32[] pseudonyms,
+        bytes32[] workIds,
+        uint256[] weights
     );
 
     /// @dev Reverts when a user submits twice in the same epoch.
@@ -38,6 +47,9 @@ contract CWEConsumption is ICWEConsumption {
     error NoCommitments();
     /// @dev Reverts when the proof verifier rejects the submitted proof.
     error ProofRejected();
+    /// @dev Reverts when the commitments/pseudonyms/workIds/weights arrays
+    ///      do not all share the same length.
+    error ArityMismatch();
 
     /// @param verifier_ The proof verifier implementation to use.
     constructor(IProofVerifier verifier_) {
@@ -57,30 +69,41 @@ contract CWEConsumption is ICWEConsumption {
     }
 
     /// @inheritdoc ICWEConsumption
-    /// @dev Enforces one submission per user per epoch and runs the proof through
-    ///      the verifier before recording. The commitments are emitted, not stored.
+    /// @dev Enforces one submission per user per epoch, checks that the parallel
+    ///      arrays agree in length, and runs the caller-supplied digest through
+    ///      the verifier before recording. The proven outputs are emitted, not
+    ///      stored on-chain; the off-chain aggregator reads them from the log.
     function submitConsumption(
         bytes32 tierId,
-        bytes32[] calldata workCommitments,
+        bytes32[] calldata commitments,
+        bytes32[] calldata pseudonyms,
+        bytes32[] calldata workIds,
+        uint256[] calldata weights,
+        bytes32 digest,
         bytes calldata proof
     ) external {
         // There must be something to account for.
-        if (workCommitments.length == 0) revert NoCommitments();
+        if (commitments.length == 0) revert NoCommitments();
+        // The four parallel arrays must describe the same set of per-work entries.
+        if (
+            commitments.length != pseudonyms.length || commitments.length != workIds.length
+                || commitments.length != weights.length
+        ) {
+            revert ArityMismatch();
+        }
 
         uint256 epoch = currentEpoch();
         // Reject a second submission from the same user in the same epoch.
         if (_submitted[epoch][msg.sender]) revert AlreadySubmitted(epoch, msg.sender);
 
-        // Run the proof through the verifier seam (accept-all in Phase 1).
-        // The verifier now takes a single public-input digest; the real binding
-        // of that digest to these commitments is wired in Task 14. For now we
-        // fold the commitments into one digest so the seam compiles and the
-        // accept-all/reject paths behave unchanged.
-        bytes32 digest = keccak256(abi.encode(workCommitments));
+        // Run the caller-supplied digest and proof through the verifier seam
+        // (accept-all in Phase 1). The digest is the ZK circuit's public-input
+        // digest binding `pseudonyms`/`workIds`/`weights`; verifying it here is
+        // what checks the proof actually attests to the emitted outputs.
         if (!verifier.verify(digest, proof)) revert ProofRejected();
 
         // Record the submission before emitting (effects before the log).
         _submitted[epoch][msg.sender] = true;
-        emit ConsumptionSubmitted(msg.sender, epoch, tierId, workCommitments);
+        emit ConsumptionSubmitted(msg.sender, epoch, tierId, digest, pseudonyms, workIds, weights);
     }
 }

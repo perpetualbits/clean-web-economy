@@ -6,13 +6,26 @@ pragma solidity ^0.8.24;
 /// @dev Keyed by `msg.sender`; one submission per user per epoch. The submitted
 ///      proof is forwarded to an `IProofVerifier` (accept-all in Phase 1).
 interface ICWEConsumption {
-    /// @notice Submit this epoch's usage commitments for the caller.
+    /// @notice Submit this epoch's usage commitments for the caller, together
+    ///         with the ZK proof's public outputs and the digest it attests to.
     /// @param tierId The tier the caller is subscribed to (recorded with the event).
-    /// @param workCommitments The per-work usage commitments (keccak256 hashes).
+    /// @param commitments The per-work usage commitments (keccak256 hashes).
+    /// @param pseudonyms The per-work pseudonymous identifiers proven by the
+    ///        circuit, one per commitment, in the same order.
+    /// @param workIds The per-work identifiers the usage is attributed to, one
+    ///        per commitment, in the same order.
+    /// @param weights The per-work usage weights proven by the circuit, one per
+    ///        commitment, in the same order.
+    /// @param digest The public-input digest the proof attests to; forwarded to
+    ///        the proof verifier unmodified.
     /// @param proof The usage proof bytes, forwarded to the proof verifier.
     function submitConsumption(
         bytes32 tierId,
-        bytes32[] calldata workCommitments,
+        bytes32[] calldata commitments,
+        bytes32[] calldata pseudonyms,
+        bytes32[] calldata workIds,
+        uint256[] calldata weights,
+        bytes32 digest,
         bytes calldata proof
     ) external;
 
