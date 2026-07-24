@@ -42,10 +42,18 @@ Runs alongside the feature phases.
   instead of owner allowlists (both removed); removing an issuer invalidates their
   credentials (`make -C ops identity-demo`) — see
   `docs/superpowers/specs/2026-07-24-verifiable-credentials-design.md`
+- [x] **H2 — ZK usage proofs (cycle 1)** ✅ — a real Groth16/BN254 usage-proof circuit
+  (`libs/zk-circuits`) verified on-chain by a real `Groth16Verifier`, a
+  `CWEEpochBeacon` publishing the per-epoch key, and Poseidon commitments; settlement
+  is dual-mode, paying from proven event weights (event mode) while the disclosure
+  file remains the legacy path for the pre-ZK demos (`make -C ops zk-demo`) — see
+  `docs/superpowers/specs/2026-07-24-zk-usage-proofs-design.md`
 
-Still to come: ZK usage proofs, decentralised settlement, a storage layer (real
-bandwidth receipts), SSI/VC identity, tier capability tokens, an epoch
-beacon, discovery v2, and security/legal hardening. Details and spec mapping in
+Still to come: H2 cycle 2 (work-identity blinding, manifest-signature and
+tier-eligibility circuits, cross-epoch unlinkability, a real randomness beacon,
+migrating the legacy demos onto real proofs), decentralised settlement, a storage
+layer (real bandwidth receipts), tier capability tokens, an epoch beacon upgrade,
+discovery v2, and security/legal hardening. Details and spec mapping in
 [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Phase 3 — DMF

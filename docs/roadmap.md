@@ -2,7 +2,7 @@
 
 # Clean Web Economy — Development Roadmap
 
-**Status date:** 2026-07-21
+**Status date:** 2026-07-25
 **Scope:** the full path from the current devnet MVPs to a production, decentralised
 system. The high-level phase list lives in `ROADMAP.md`; this document is the
 detailed, status-annotated plan.
@@ -11,21 +11,22 @@ detailed, status-annotated plan.
 
 ## 1. Where we are
 
-Seven milestones are complete and merged to `main`, each with a one-command
+Eight milestones are complete and merged to `main`, each with a one-command
 end-to-end demo on a local Anvil devnet.
 
 | Area | Built | Status |
 |---|---|---|
-| **Contracts** (`chain/`) | `CWETiers`, `CWEConsumption`, `CWEPayouts`, `IProofVerifier`/`AcceptAllVerifier`; `CWERegistry` (+ `content_id`, multi-party consent, registration timestamp); `CWEEscrow` (async dispute flow) + `EarliestRegistrationArbiter`/`IArbiter`; `CWEJury`/`IJury` (committee); `CWEIdentity`/`ICWEIdentity` (verifiable credentials) | ✅ Phase 1 · H1 · Phase 2·3 · H6 |
+| **Contracts** (`chain/`) | `CWETiers`, `CWEConsumption`, `CWEPayouts`, `IProofVerifier`/`AcceptAllVerifier`/`Groth16Verifier` (real BN254 pairing check); `CWEEpochBeacon` (published per-epoch key); `CWERegistry` (+ `content_id`, multi-party consent, registration timestamp); `CWEEscrow` (async dispute flow) + `EarliestRegistrationArbiter`/`IArbiter`; `CWEJury`/`IJury` (committee); `CWEIdentity`/`ICWEIdentity` (verifiable credentials) | ✅ Phase 1 · H1 · Phase 2·3 · H6 · H2 |
 | **Payout math** (`sims/`) | `cwe-dapr` — user-centric DAPR: diminishing returns, bandwidth-credibility discount, reputation signal; deterministic integer math, fee-conserving | ✅ Phase 1 · H3 |
 | **Fingerprint** (`libs/fingerprint`) | Haitsma-Kalker perceptual fingerprint (gain-invariant, Hamming compare), `fp:<hex>` format | ✅ H1 |
-| **Client core** (`libs/wallet-zk`) | keccak commitments, `none-v0` ZK seam, epoch session store | ✅ Phase 1 |
-| **Settlement** (`services/settlement`) | reads events, opens commitments, runs DAPR, commits Merkle root; routes signed → direct payout, fingerprint → escrow | ✅ Phase 1 · H1 |
+| **Client core** (`libs/wallet-zk`) | keccak commitments, Poseidon commitments shared with the ZK circuit, `none-v0` ZK seam, epoch session store | ✅ Phase 1 · H2 |
+| **ZK usage circuits** (`libs/zk-circuits`) | Groth16/BN254 circuit proving usage is well-formed, range-bounded, diminishing-returns-capped, epoch-bound, and per-work-unique; Poseidon commitments/pseudonyms/digest; devnet trusted-setup + prover; EVM proof-point export | ✅ H2 (cycle 1) |
+| **Settlement** (`services/settlement`) | reads events, opens commitments, runs DAPR, commits Merkle root; routes signed → direct payout, fingerprint → escrow; dual-mode: legacy disclosure-file path (pre-ZK demos) or event mode paying from Groth16-proven usage weights (`make zk-demo`) | ✅ Phase 1 · H1 · H2 |
 | **Browser extension** (`clients/browser-ext`) | Rust→WASM core + MV3 shell; local accounting, price cap, settle flow; two-tier recognition (signed content + fingerprint fallback) | ✅ Phase 1 · H1 |
 | **Discovery Hub** (`services/discovery-hub`) | signed, chain-anchored manifest ingest; content-id (Tier 1) + fingerprint nearest-match (Tier 2) resolve; search/trending; OpenAPI | ✅ Phase 2·1 · H1 |
 | **Player agent** (`clients/player-plugin`) | native Rust `cwe-player`: symphonia decode → two-tier recognition → price cap → accrual → on-chain settle; `play`/`status`/`settle`/`fingerprint` | ✅ Phase 2·2 |
 | **Arbitration jury** (`chain/`) | `CWEJury` committee: owner-appointed jurors, file→vote→finalize, majority verdict moves the escrow, earliest-registration fallback on a tie/silence | ✅ Phase 2·3 |
-| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, `make player-demo`, `make arbitration-demo`, `make antifraud-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e/player-e2e/arbitration-e2e/antifraud-e2e) | ✅ |
+| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, `make player-demo`, `make arbitration-demo`, `make antifraud-demo`, `make identity-demo`, `make zk-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e/player-e2e/arbitration-e2e/antifraud-e2e/identity-e2e/zk-e2e) | ✅ |
 
 ### What is real vs. stubbed
 
@@ -34,7 +35,7 @@ seam designed for drop-in replacement:
 
 | Concern | MVP today | Target spec |
 |---|---|---|
-| Usage proofs | keccak hash commitments + disclosure file; accept-all verifier | `zk_usage_proof_requirements.md` |
+| Usage proofs | real Groth16/BN254 integrity proof + within-epoch dedup, verified on-chain (`Groth16Verifier`); settlement pays from proven event weights (event mode). Disclosure file retained as the legacy path for the pre-ZK demos (dual-mode) | `zk_usage_proof_requirements.md` |
 | Fingerprinting | Haitsma-Kalker perceptual (gain-invariant); production robustness (re-encode, landmark/chromaprint) still to come | `fingerprinting_specification.md` |
 | Payout weighting | `minutes·price·region`, largest-remainder split | `DAPR_usage_aggregation_protocol.md` (bandwidth, diminishing returns, diversity) |
 | Settlement trust | single trusted aggregator commits a Merkle root | `rollup_aggregation_and_settlement_Interface_specification.md` |
@@ -114,9 +115,24 @@ track:
   by `make ownership-demo`. *Remaining for H3:* production fingerprint robustness
   (re-encode/landmark) and proving the signed-vs-fingerprint tier split rather than
   trusting the disclosure.
-- **H2 — ZK usage proofs** (`zk_usage_proof_requirements.md`, `docs/issues/003`):
-  real circuits behind the `ZK`/`IProofVerifier` seam, replacing the disclosure file.
-  Removes the aggregator's view of raw usage.
+- ✅ **H2 — ZK usage proofs (cycle 1)** (`zk_usage_proof_requirements.md`,
+  `docs/issues/003`): a real Groth16/BN254 usage-proof circuit
+  (`libs/zk-circuits`) behind the `IProofVerifier` seam, verified on-chain by a
+  real `Groth16Verifier` (replaces `AcceptAllVerifier` on the default deploy),
+  a `CWEEpochBeacon` publishing the per-epoch key, and Poseidon commitments
+  shared between the client and circuit. Settlement is dual-mode: event mode
+  pays from the proven per-work weights carried on-chain by the proof (the
+  aggregator never sees raw usage); the disclosure file remains the legacy
+  path so the four pre-ZK demos and the player keep working unmodified.
+  Integrity-first: usage is provably well-formed, range-bounded,
+  diminishing-returns-capped, epoch-bound, and per-work-unique
+  (`make zk-demo` — honest usage pays, inflation and row-splitting are
+  rejected on-chain/in-circuit). *Deferred to a later cycle:* work-identity
+  blinding (hiding *which* works a user consumed), a manifest-signature
+  circuit, a tier-eligibility circuit, cross-epoch unlinkability, a real
+  randomness beacon (VRF/drand — `CWEEpochBeacon`'s key today is
+  operator-published, not randomness-backed), and migrating the four legacy
+  demos plus the player off the disclosure path onto real proofs.
 - ✅ **H3 — Full DAPR + anti-fraud** (`DAPR_usage_aggregation_protocol.md`,
   `anti-fraud_and_bandwidth_receipt_protocol.md`): `cwe-dapr` now computes the real
   **user-centric** DAPR model — per-user diminishing returns (play count bound in the
@@ -163,35 +179,44 @@ flowchart LR
   H3 --> H9
   H6[H6 SSI identity ✅] --> P3[Phase 3 DMF]
   P22 --> P3
-  H2[H2 ZK proofs] --> H4[H4 Decentralised settlement]
+  H2[H2 ZK proofs ✅ cycle 1] --> H4[H4 Decentralised settlement]
   P23[2.3 Arbitration] --> P4[Phase 4 Governance]
   P3 --> P4
 ```
 
-Critical enablers: **H1 (recognition & ownership)** ✅ and **H6 (identity)** ✅ are in —
-recognition/provenance/escrow plus a credential layer that gates registration and
-graduates the jury, and unblocks **Phase 3**; **H2/H4 (ZK + decentralised settlement)**
-are the trust-minimisation backbone but can trail the feature work.
+Critical enablers: **H1 (recognition & ownership)** ✅, **H6 (identity)** ✅, and now
+**H2 (ZK usage proofs, cycle 1)** ✅ are in — recognition/provenance/escrow plus a
+credential layer that gates registration and graduates the jury (unblocking
+**Phase 3**), and a real integrity proof replacing the disclosure file's trust
+assumption for usage. **H4 (decentralised settlement)** is the remaining
+trust-minimisation piece, and a second H2 cycle (work-identity blinding, the
+manifest/tier circuits, cross-epoch unlinkability, a real beacon, and migrating
+the legacy demos) can trail the feature work.
 
 ---
 
 ## 5. Recommended near-term next steps
 
 Ranked by value-per-effort given what exists. **Phase 2 is complete** (Discovery Hub,
-player agent, arbitration jury); **H3 (DAPR + anti-fraud)** and **H6 (identity)** have
-landed — so the recognition/provenance/escrow/payout core plus a credential layer are
-in place, and the next moves are the trust-minimisation backbone and first Phase 3
-groundwork:
+player agent, arbitration jury); **H3 (DAPR + anti-fraud)**, **H6 (identity)**, and now
+**H2 cycle 1 (ZK usage proofs)** have landed — so the recognition/provenance/escrow/
+payout core, a credential layer, and a real on-chain integrity proof for usage are in
+place, and the next moves are first Phase 3 groundwork and the remaining
+trust-minimisation items:
 
-1. **H2 — ZK usage proofs.** Replace the disclosure-file stand-in with real circuits
-   behind the `IProofVerifier` seam — removes the aggregator's view of raw usage and
-   is the prerequisite the whole privacy story leans on.
-2. **Phase 3 — Creator DMF.** Now unblocked by H6 identity: creator shops, gigs,
+1. **Phase 3 — Creator DMF.** Now unblocked by H6 identity: creator shops, gigs,
    split-pay, a signed service registry, SSI/OIDC auth.
-3. **H5 — Storage layer + real bandwidth receipts.** The peer-to-peer storage/swarm
+2. **H5 — Storage layer + real bandwidth receipts.** The peer-to-peer storage/swarm
    that supplies the *real* bandwidth-credibility signal H3 wired as a neutral input —
    turning the anti-fraud "strict loss" from demonstrated to live.
-4. **Follow-ons:** the reputation→hub-ranking wiring (H3 fast-follow); the player
+3. **H2 — cycle 2 (deferred from cycle 1).** Work-identity blinding (hide *which*
+   works a user consumed), a manifest-signature circuit, a tier-eligibility circuit,
+   cross-epoch unlinkability, a real randomness beacon (VRF/drand) for
+   `CWEEpochBeacon`, and migrating the four legacy demos plus the player off the
+   disclosure path onto real proofs.
+4. **H4 — Decentralised settlement.** Rollup/multi-aggregator model, now that event
+   mode gives the aggregator a proof-backed usage signal to build on.
+5. **Follow-ons:** the reputation→hub-ranking wiring (H3 fast-follow); the player
    agent's VLC/FFmpeg C module + video fingerprinting; the trustless staked jury.
 
 Each becomes its own spec → plan → build cycle. This document is updated as items land.
