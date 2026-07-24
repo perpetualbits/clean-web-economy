@@ -1,0 +1,31 @@
+# H2 — zero-knowledge usage-proof circuits (Groth16 over BN254).
+#
+# This crate holds the arithmetic circuit that proves a user's per-epoch
+# usage is well-formed, range-bounded, diminishing-returns-capped,
+# epoch-bound, and per-work unique, without revealing the underlying per-work
+# play counts — only a single Poseidon digest is exposed on-chain. It links
+# `cwe-dapr` (the diminishing-returns math it must mirror in-circuit) and
+# `cwe-wallet-zk` (the commitment/session types it proves statements about).
+[package]
+name = "cwe-zk-circuits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ark-bn254.workspace = true
+ark-ff.workspace = true
+ark-ec.workspace = true
+ark-relations.workspace = true
+ark-r1cs-std.workspace = true
+ark-crypto-primitives.workspace = true
+ark-groth16.workspace = true
+ark-snark.workspace = true
+ark-serialize.workspace = true
+ark-std.workspace = true
+cwe-dapr = { path = "../../sims" }
+cwe-wallet-zk = { path = "../wallet-zk" }
+hex.workspace = true
+
+[dev-dependencies]

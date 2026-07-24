@@ -21,6 +21,7 @@ resolver = "2"
 members = [
     "libs/fingerprint",   # WP3 — deterministic fingerprint stub
     "libs/wallet-zk",     # WP4 — wallet, commitments, session accounting
+    "libs/zk-circuits",   # H2 — zero-knowledge usage-proof circuits
     "sims",               # WP2 — DAPR payout-math reference crate
     "services/settlement",  # WP5 — off-chain epoch settlement job
     "services/discovery-hub", # Phase 2 — Discovery Hub service
@@ -60,6 +61,17 @@ serde_jcs = "0.1"     # RFC 8785 canonical JSON for signable manifests
 # `tiny-keccak` provides keccak256, the hash the contracts use for commitments;
 # keeping the same primitive off-chain guarantees on-/off-chain agreement (WP4).
 tiny-keccak = { version = "2", features = ["keccak"] }
+# arkworks 0.5 stack for the H2 usage-proof circuits (Groth16 over BN254).
+ark-bn254 = { version = "0.5", default-features = false, features = ["curve"] }
+ark-ff = { version = "0.5", default-features = false }
+ark-ec = { version = "0.5", default-features = false }
+ark-relations = { version = "0.5", default-features = false }
+ark-r1cs-std = { version = "0.5", default-features = false }
+ark-crypto-primitives = { version = "0.5", default-features = false, features = ["sponge", "crh", "r1cs"] }
+ark-groth16 = { version = "0.5", default-features = false }
+ark-snark = { version = "0.5", default-features = false }
+ark-serialize = { version = "0.5", default-features = false }
+ark-std = { version = "0.5", default-features = false }
 
 # ---------------------------------------------------------------------------
 # Release-profile tuning. Off-chain jobs (settlement) benefit from optimised
