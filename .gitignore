@@ -14,6 +14,10 @@ chain/deployments/localhost.json
 chain/out/
 # forge script broadcast logs (per-run transaction artifacts).
 chain/broadcast
+# Devnet Groth16 proving key: large (~17MB) and regenerable via `export_keys`.
+# The verifying key (chain/zk/verifying_key.bin) IS committed; the proving key
+# is not — it is rebuilt deterministically by the trusted setup when needed.
+chain/zk/proving_key.bin
 
 # --- WebAssembly / extension build (WP6) ------------------------------------
 clients/browser-ext/dist
