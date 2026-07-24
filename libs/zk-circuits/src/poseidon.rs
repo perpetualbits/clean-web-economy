@@ -5,6 +5,7 @@ use ark_crypto_primitives::sponge::{poseidon::PoseidonSponge, CryptographicSpong
 use ark_ff::PrimeField;
 
 use crate::field::{fr_from_bytes32, fr_from_u128, fr_to_bytes32, Fr};
+use crate::prove::PublicRow;
 
 /// The single Poseidon configuration shared by the native hash and the in-circuit
 /// gadget. Both derive from these exact round/MDS constants, so a commitment made
@@ -66,6 +67,42 @@ pub fn commitment(work_id: &[u8; 32], minutes: u64, plays: u64, salt: &[u8; 32])
 pub fn pseudonym(k_epoch: &[u8; 32], commitment: &[u8; 32]) -> [u8; 32] {
     let f = poseidon_hash(&[fr_from_bytes32(k_epoch), fr_from_bytes32(commitment)]);
     fr_to_bytes32(&f)
+}
+
+/// The single public digest committing to a whole per-epoch submission.
+///
+/// The preimage is the fixed-length field vector, in this exact order — the
+/// in-circuit recomputation in `UsageCircuit` MUST match it element-for-element,
+/// or honest proofs will not verify:
+///
+/// ```text
+/// [ epoch,                       // fr_from_u128(epoch)
+///   tier,                        // fr_from_bytes32(tier)
+///   k_epoch,                     // fr_from_bytes32(k_epoch)
+///   pseudonym_0, work_id_0, weight_0,   // row 0
+///   pseudonym_1, work_id_1, weight_1,   // row 1
+///   ...                                 // through row MAX_WORKS-1
+/// ]
+/// ```
+///
+/// Its length is exactly `3 + 3 * MAX_WORKS`. The caller MUST pass exactly
+/// `MAX_WORKS` rows — real rows first, then canonical padding rows (`work_id = 0`,
+/// `commitment = padded_commitment`, `pseudonym = Poseidon(k_epoch, padded_commitment)`,
+/// `weight = 0`). Only `pseudonym`, `work_id` and `weight` of each row are hashed;
+/// the per-row `commitment` is not part of the preimage.
+pub fn digest(epoch: u64, tier: &[u8; 32], k_epoch: &[u8; 32], rows: &[PublicRow]) -> [u8; 32] {
+    // The preimage always has the same shape so the verifying key is stable.
+    let mut inputs = Vec::with_capacity(3 + 3 * crate::MAX_WORKS);
+    inputs.push(fr_from_u128(epoch as u128)); // epoch lifts canonically into the field
+    inputs.push(fr_from_bytes32(tier)); // tier reduces mod order like any 256-bit id
+    inputs.push(fr_from_bytes32(k_epoch)); // the shared per-epoch key
+    for row in rows {
+        // Per-row order: pseudonym, work_id, weight — the circuit repeats this order.
+        inputs.push(fr_from_bytes32(&row.pseudonym));
+        inputs.push(fr_from_bytes32(&row.work_id));
+        inputs.push(fr_from_u128(row.weight));
+    }
+    fr_to_bytes32(&poseidon_hash(&inputs))
 }
 
 #[cfg(test)]

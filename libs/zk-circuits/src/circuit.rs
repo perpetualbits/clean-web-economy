@@ -17,9 +17,7 @@ use crate::poseidon::{commitment as native_commitment, poseidon_config};
 // production circuit now derives pseudonyms in-circuit from the `k_epoch` variable.
 #[cfg(test)]
 use crate::poseidon::pseudonym as native_pseudonym;
-use crate::MAX_PLAYS_CIRCUIT;
-#[cfg(test)]
-use crate::MAX_WORKS;
+use crate::{MAX_PLAYS_CIRCUIT, MAX_WORKS};
 
 /// Bit-width bound on a row's per-epoch `minutes`. 2^32 minutes far exceeds any
 /// honest epoch, so this only rejects overflow/garbage while keeping the field
@@ -32,6 +30,15 @@ pub const PLAYS_BITS: usize = 7;
 /// Bit-width bound on the ppm factors (`price_ppm`, `region_ppm`). 40 bits
 /// comfortably covers realistic ppm magnitudes while bounding the product terms.
 pub const PPM_BITS: usize = 40;
+/// Bit-width bound on a row's DR-capped `weight`. The claimed weight equals
+/// `floor(value * d / 1e6)` where `value = minutes * price_ppm * region_ppm`, so
+/// `value < 2^MINUTES_BITS * 2^PPM_BITS * 2^PPM_BITS = 2^(32+40+40) = 2^112`, and
+/// `d <= 1e6` gives `weight <= value < 2^112`. Bounding `weight` to `2^120`
+/// leaves a comfortable margin while still pinning it far below the field
+/// modulus. Without this bound the proven floor-division `weight*1e6 + r == value*d`
+/// admits spurious full-width-field `weight` solutions, so the DR cap is only
+/// complete once `weight` is bit-bounded here.
+pub const WEIGHT_BITS: usize = 120;
 
 /// The fixed-point scale (parts-per-million) the DR-capped weight divides by,
 /// mirroring `cwe_dapr`'s `mul_div(value, d_ppm, 1e6)` in `weight_of`.
@@ -110,14 +117,13 @@ pub struct UsageCircuit {
     pub digest: [u8; 32],
 }
 
-/// The allocated per-row variables that later tasks reuse. Task 7 consumes
-/// `work_id_var`/`weight_var`/`pseudonym_var`/`active_var` for the DR-cap and
-/// epoch-binding constraints; `commitment_var` feeds the Task-8 uniqueness and
-/// digest binding. Returning them from `enforce_row` keeps the growing constraint
-/// system's row logic in one place.
-// Fields are produced now but first *read* in Tasks 7-8; keep them wired up so the
-// return shape those tasks depend on is stable from this task onward.
-#[allow(dead_code)]
+/// The allocated per-row variables the circuit-wide passes reuse: uniqueness
+/// reads `work_id_var`/`active_var`, and the digest binding reads
+/// `pseudonym_var`/`work_id_var`/`weight_var` (with `active_var` implicitly bound
+/// via the padding constraints). Returning them from `enforce_row` keeps the
+/// constraint system's row logic in one place. The commitment is fully
+/// constrained inside `enforce_row` and does not enter any later pass, so it is
+/// not carried here.
 struct RowVars {
     /// The work identifier as a field element (`fr_from_bytes32(work_id)`).
     work_id_var: FpVar<Fr>,
@@ -127,8 +133,6 @@ struct RowVars {
     pseudonym_var: FpVar<Fr>,
     /// The row-active flag.
     active_var: Boolean<Fr>,
-    /// The usage commitment as a field element.
-    commitment_var: FpVar<Fr>,
 }
 
 /// The canonical commitment of the all-zero opening — the value every inactive
@@ -240,6 +244,11 @@ impl UsageCircuit {
             &weight_var,
             &active_var,
         )?;
+        // Upper-bound the claimed weight so the floor-division proof is complete:
+        // without this, `weight*1e6 + r == value*d` has spurious full-width-field
+        // solutions. `weight < 2^WEIGHT_BITS` (>= its true `2^112` ceiling) closes
+        // that gap before `weight` feeds the digest below.
+        enforce_bit_width(&weight_var, WEIGHT_BITS, &active_var)?;
 
         // --- Epoch binding (active rows) ---------------------------------------
         // The pseudonym must be the in-circuit Poseidon of the shared epoch key
@@ -268,7 +277,6 @@ impl UsageCircuit {
             weight_var,
             pseudonym_var,
             active_var,
-            commitment_var,
         })
     }
 }
@@ -379,27 +387,84 @@ fn enforce_dr_weight(
 }
 
 impl ConstraintSynthesizer<Fr> for UsageCircuit {
-    /// Emit the constraints for every row. This task enforces per-row commitment
-    /// correctness, range bounds and well-formed padding; the DR-cap + pseudonym
-    /// binding (Task 7) and uniqueness + digest binding (Task 8) will extend this.
+    /// Emit the full usage-proof constraint system: per-row commitment
+    /// correctness, range bounds, DR-cap, epoch-binding and well-formed padding;
+    /// per-work uniqueness over active rows; and binding of the single public
+    /// `digest` input to the Poseidon of `(epoch, tier, k_epoch, per-row outputs)`.
+    ///
+    /// The circuit has a fixed shape: it MUST be built with exactly `MAX_WORKS`
+    /// rows (real rows first, canonical padding after). This is a caller contract
+    /// — the prover path (Task 10) pads before synthesis — enforced here so a
+    /// mis-sized circuit can never be turned into a Groth16 instance with the
+    /// wrong verifying key; a wrong length returns `SynthesisError::Unsatisfiable`.
     fn generate_constraints(self, cs: ConstraintSystemRef<Fr>) -> Result<(), SynthesisError> {
-        // Allocate the public digest as an (as-yet unconstrained) witness. Task 8
-        // promotes it to a public input and binds it to the Poseidon of all rows;
-        // for now it is a placeholder so the system stays satisfiable.
-        let _digest_var = FpVar::new_witness(cs.clone(), || Ok(fr_from_bytes32(&self.digest)))?;
+        // Fixed-size circuit invariant: the row count pins the shape (and thus the
+        // verifying key). Reject any other length rather than silently synthesising
+        // a differently-shaped system.
+        if self.rows.len() != MAX_WORKS {
+            return Err(SynthesisError::Unsatisfiable);
+        }
+
+        // The digest is the SINGLE public input — the only value the on-chain
+        // verifier sees. Everything else (epoch, tier, k_epoch, per-row data) is a
+        // witness bound to this input through the recomputation below.
+        let digest_var = FpVar::new_input(cs.clone(), || Ok(fr_from_bytes32(&self.digest)))?;
 
         // Allocate the per-epoch pseudonym key ONCE as a single witness variable.
         // Every row's active/inactive pseudonym is derived from this same variable,
         // so a prover cannot pick an inconsistent `k_epoch` between rows — the
         // fixed Groth16 circuit stays sound. (It is a witness, not a public input:
-        // the epoch key is the user's secret; Task 8 binds the public digest.)
+        // the epoch key is the user's secret; the public digest binds it.)
         let k_epoch_var = FpVar::new_witness(cs.clone(), || Ok(fr_from_bytes32(&self.k_epoch)))?;
 
-        // Constrain each row uniformly; `RowVars` are collected for later tasks
-        // even though this task consumes only the per-row checks inside `enforce_row`.
+        // Constrain each row uniformly, collecting the reusable per-row variables
+        // for the uniqueness and digest-binding passes below.
+        let mut row_vars = Vec::with_capacity(MAX_WORKS);
         for row in &self.rows {
-            let _vars = self.enforce_row(cs.clone(), row, &k_epoch_var)?;
+            row_vars.push(self.enforce_row(cs.clone(), row, &k_epoch_var)?);
         }
+
+        // --- Per-work uniqueness (over active rows) ----------------------------
+        // For every ordered pair i<j, forbid two *active* rows sharing a work id.
+        // Gating on both rows being active is essential: padding rows all carry
+        // `work_id == 0` and must NOT trip uniqueness. This makes the DR cap
+        // un-bypassable by splitting one work across several rows.
+        for i in 0..MAX_WORKS {
+            for j in (i + 1)..MAX_WORKS {
+                // work_id_i == work_id_j ?
+                let ids_equal = row_vars[i].work_id_var.is_eq(&row_vars[j].work_id_var)?;
+                // Enforce `!(active_i AND active_j AND ids_equal)`: at least one of
+                // the three must be false, so two active rows can never collide.
+                Boolean::enforce_kary_nand(&[
+                    row_vars[i].active_var.clone(),
+                    row_vars[j].active_var.clone(),
+                    ids_equal,
+                ])?;
+            }
+        }
+
+        // --- Digest binding (single public input) ------------------------------
+        // Recompute the digest in-circuit in the SAME field order as the native
+        // `poseidon::digest`: [epoch, tier, k_epoch, (pseudonym, work_id, weight)*].
+        // epoch and tier are witnesses here (only the digest is public); binding
+        // them into the digest ties them to the on-chain-visible value.
+        let epoch_var = FpVar::new_witness(cs.clone(), || Ok(fr_from_u128(self.epoch as u128)))?;
+        let tier_var = FpVar::new_witness(cs.clone(), || Ok(fr_from_bytes32(&self.tier)))?;
+        let mut digest_inputs = Vec::with_capacity(3 + 3 * MAX_WORKS);
+        digest_inputs.push(epoch_var);
+        digest_inputs.push(tier_var);
+        digest_inputs.push(k_epoch_var.clone());
+        for vars in &row_vars {
+            // Per-row order mirrors the native digest exactly.
+            digest_inputs.push(vars.pseudonym_var.clone());
+            digest_inputs.push(vars.work_id_var.clone());
+            digest_inputs.push(vars.weight_var.clone());
+        }
+        let computed_digest = poseidon_hash_gadget(cs.clone(), &digest_inputs)?;
+        // Bind the public input to the recomputed digest (unconditional — the
+        // digest commits to the whole submission, padding included).
+        digest_var.enforce_equal(&computed_digest)?;
+
         Ok(())
     }
 }
@@ -463,14 +528,27 @@ fn test_circuit(mut rows: Vec<RowWitness>) -> UsageCircuit {
     while rows.len() < MAX_WORKS {
         rows.push(padded_row(&TEST_K_EPOCH));
     }
+    let epoch = 1u64;
+    let tier = [0u8; 32];
+    // Project each (padded) row into its public form and take the native digest,
+    // so the circuit's in-circuit recomputation must match exactly.
+    let public_rows: Vec<crate::prove::PublicRow> = rows
+        .iter()
+        .map(|r| crate::prove::PublicRow {
+            work_id: r.work_id,
+            commitment: r.commitment,
+            pseudonym: r.pseudonym,
+            weight: r.weight,
+        })
+        .collect();
+    let digest = crate::poseidon::digest(epoch, &tier, &TEST_K_EPOCH, &public_rows);
     UsageCircuit {
-        epoch: 1,
-        tier: [0u8; 32],
+        epoch,
+        tier,
         k_epoch: TEST_K_EPOCH,
         k_ppm: TEST_K_PPM,
         rows,
-        // Placeholder digest; the digest public-input binding is Task 8.
-        digest: crate::field::fr_to_bytes32(&Fr::from(0u64)),
+        digest,
     }
 }
 
@@ -536,5 +614,36 @@ mod tests {
         let cs2 = ConstraintSystem::<crate::field::Fr>::new_ref();
         wp.generate_constraints(cs2.clone()).unwrap();
         assert!(!cs2.is_satisfied().unwrap());
+    }
+
+    /// Uniqueness over active work ids and the single-public-input digest binding:
+    /// (a) duplicate active work ids are rejected; (b) distinct rows carrying the
+    /// correct native digest satisfy the system; (c) tampering the public digest
+    /// makes the system unsatisfiable.
+    #[test]
+    fn uniqueness_and_digest() {
+        use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem};
+        // Two active rows, same work id → uniqueness violated.
+        let r1 = super::test_row(&[1u8; 32], 10, 1, &[9u8; 32], 1_000_000, 1_000_000);
+        let r2 = super::test_row(&[1u8; 32], 20, 1, &[8u8; 32], 1_000_000, 1_000_000);
+        let dup = super::test_circuit(vec![r1, r2]);
+        let cs = ConstraintSystem::<crate::field::Fr>::new_ref();
+        dup.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+
+        // Distinct rows with the correct digest → satisfied.
+        let a = super::test_row(&[1u8; 32], 10, 1, &[9u8; 32], 1_000_000, 1_000_000);
+        let b = super::test_row(&[2u8; 32], 20, 1, &[8u8; 32], 1_000_000, 1_000_000);
+        let ok = super::test_circuit(vec![a, b]);
+        let cs2 = ConstraintSystem::<crate::field::Fr>::new_ref();
+        ok.clone().generate_constraints(cs2.clone()).unwrap();
+        assert!(cs2.is_satisfied().unwrap());
+
+        // Tamper the public digest → violated.
+        let mut bad = ok;
+        bad.digest = [0x00; 32];
+        let cs3 = ConstraintSystem::<crate::field::Fr>::new_ref();
+        bad.generate_constraints(cs3.clone()).unwrap();
+        assert!(!cs3.is_satisfied().unwrap());
     }
 }
