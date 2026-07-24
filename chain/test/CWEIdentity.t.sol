@@ -4,6 +4,10 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {CWEIdentity} from "../contracts/CWEIdentity.sol";
 
+/// @title CWEIdentityTest
+/// @notice Unit tests for the credential registry: issuer curation, attestation,
+///         revocation, the strict expiry boundary, and the issuer-still-trusted
+///         validity rule.
 contract CWEIdentityTest is Test {
     CWEIdentity internal id;
     address internal owner = makeAddr("owner");
@@ -11,6 +15,7 @@ contract CWEIdentityTest is Test {
     address internal alice = makeAddr("alice");
     bytes32 internal constant T = keccak256("cwe.credential.verified-creator");
 
+    /// @notice Deploy the registry, trust one issuer, and set a sane clock.
     function setUp() public {
         id = new CWEIdentity(owner);
         vm.prank(owner);
