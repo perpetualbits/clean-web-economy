@@ -8,12 +8,15 @@ use ark_r1cs_std::convert::ToBitsGadget;
 use ark_r1cs_std::eq::EqGadget;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::fields::FieldVar;
+use ark_r1cs_std::R1CSVar;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
 use crate::field::{fr_from_bytes32, fr_from_u128, Fr};
-use crate::poseidon::{
-    commitment as native_commitment, poseidon_config, pseudonym as native_pseudonym,
-};
+use crate::poseidon::{commitment as native_commitment, poseidon_config};
+// The native pseudonym is used only to build expected values in the tests; the
+// production circuit now derives pseudonyms in-circuit from the `k_epoch` variable.
+#[cfg(test)]
+use crate::poseidon::pseudonym as native_pseudonym;
 use crate::MAX_PLAYS_CIRCUIT;
 #[cfg(test)]
 use crate::MAX_WORKS;
@@ -29,6 +32,21 @@ pub const PLAYS_BITS: usize = 7;
 /// Bit-width bound on the ppm factors (`price_ppm`, `region_ppm`). 40 bits
 /// comfortably covers realistic ppm magnitudes while bounding the product terms.
 pub const PPM_BITS: usize = 40;
+
+/// The fixed-point scale (parts-per-million) the DR-capped weight divides by,
+/// mirroring `cwe_dapr`'s `mul_div(value, d_ppm, 1e6)` in `weight_of`.
+const PPM_SCALE: u128 = 1_000_000;
+
+/// The diminishing-returns curvature the circuit bakes into its constant lookup
+/// table. For the MVP this is the neutral `1_000_000` (`D(1)` full weight);
+/// governance-tunable `k_ppm` is deferred — see the design doc. Fixing it as a
+/// circuit constant keeps the DR table (and hence the verifying key) stable.
+const K_PPM_CIRCUIT: u64 = 1_000_000;
+
+/// Bit-width used to range-check the floor-division remainder `r`. `PPM_SCALE`
+/// (`1_000_000`) is below `2^20`, so 20 bits bounds `r` well under the field
+/// modulus; a companion `PPM_SCALE-1 - r` check then pins `r < PPM_SCALE`.
+const REMAINDER_BITS: usize = 20;
 
 /// The in-circuit Poseidon hash — absorb `inputs`, squeeze one element — using the
 /// exact `poseidon_config()` the native hash uses, guaranteeing agreement.
@@ -122,8 +140,10 @@ fn padded_commitment() -> [u8; 32] {
 
 /// The canonical pseudonym of a padding row: `Poseidon(k_epoch, padded_commitment)`.
 /// Inactive rows must carry this so their pseudonym slot is fixed and the digest
-/// stays deterministic. (The in-circuit *derivation* of pseudonyms is Task 7; here
-/// we only pin the padding value.)
+/// stays deterministic. As of Task 7 the circuit derives this value *in-circuit*
+/// from the shared `k_epoch` variable, so this native helper only builds the
+/// matching expected value for the tests (hence `#[cfg(test)]`).
+#[cfg(test)]
 fn padded_pseudonym(k_epoch: &[u8; 32]) -> [u8; 32] {
     native_pseudonym(k_epoch, &padded_commitment())
 }
@@ -132,14 +152,22 @@ impl UsageCircuit {
     /// Allocate and constrain a single row, returning its reusable `RowVars`.
     ///
     /// Real (`active`) rows must satisfy commitment-correctness, the range bounds,
-    /// and `work_id != 0`. Inactive (padding) rows must be the canonical zero row:
-    /// `work_id == 0`, `weight == 0`, and the fixed padded commitment/pseudonym.
+    /// `work_id != 0`, the DR-cap on `weight`, and the epoch-binding
+    /// `pseudonym == Poseidon(k_epoch, commitment)`. Inactive (padding) rows must
+    /// be the canonical zero row: `work_id == 0`, `weight == 0`, the fixed padded
+    /// commitment, and the padded pseudonym `Poseidon(k_epoch, padded_commitment)`.
     /// Every active-only check is gated on `active`, every inactive-only check on
     /// its negation, so one uniform row routine handles both kinds.
+    ///
+    /// `k_epoch_var` is the single circuit-wide epoch-key variable allocated by
+    /// `generate_constraints`; both the active pseudonym derivation and the
+    /// inactive padded-pseudonym derivation read it, so a prover cannot smuggle in
+    /// an inconsistent `k_epoch` across rows.
     fn enforce_row(
         &self,
         cs: ConstraintSystemRef<Fr>,
         row: &RowWitness,
+        k_epoch_var: &FpVar<Fr>,
     ) -> Result<RowVars, SynthesisError> {
         // --- Witness allocation ------------------------------------------------
         // `active` is a boolean witness; every conditional check keys off it.
@@ -200,14 +228,39 @@ impl UsageCircuit {
         // Active rows must reference a real work (non-zero id).
         work_id_var.conditional_enforce_not_equal(&FpVar::zero(), &active_var)?;
 
+        // --- DR-cap on the claimed weight (active rows) ------------------------
+        // Prove `weight == floor(minutes·price·region · D(plays) / 1e6)`, exactly
+        // the native `weight_of`, via an in-circuit DR table + proven division.
+        enforce_dr_weight(
+            row,
+            &minutes_var,
+            &plays_var,
+            &price_var,
+            &region_var,
+            &weight_var,
+            &active_var,
+        )?;
+
+        // --- Epoch binding (active rows) ---------------------------------------
+        // The pseudonym must be the in-circuit Poseidon of the shared epoch key
+        // and this row's commitment; corrupting either breaks equality. Sharing
+        // `k_epoch_var` with the inactive derivation below closes the Task-6
+        // soundness gap (no per-row `k_epoch` freedom).
+        let derived_pseudonym =
+            poseidon_hash_gadget(cs.clone(), &[k_epoch_var.clone(), commitment_var.clone()])?;
+        pseudonym_var.conditional_enforce_equal(&derived_pseudonym, &active_var)?;
+
         // --- Canonical padding (inactive rows) ---------------------------------
-        // Padding rows are pinned to the zero row + fixed padded commitment/
-        // pseudonym so the later digest over all rows is deterministic.
+        // Padding rows are pinned to the zero row + fixed padded commitment and a
+        // pseudonym *derived in-circuit* from the same `k_epoch_var`, so the later
+        // digest over all rows is deterministic and the epoch key is bound even on
+        // padding rows (rather than a natively-precomputed constant).
         work_id_var.conditional_enforce_equal(&FpVar::zero(), &inactive_var)?;
         weight_var.conditional_enforce_equal(&FpVar::zero(), &inactive_var)?;
         let padded_c = FpVar::constant(fr_from_bytes32(&padded_commitment()));
-        let padded_p = FpVar::constant(fr_from_bytes32(&padded_pseudonym(&self.k_epoch)));
         commitment_var.conditional_enforce_equal(&padded_c, &inactive_var)?;
+        // Same derivation as the active path, over the canonical padded commitment.
+        let padded_p = poseidon_hash_gadget(cs.clone(), &[k_epoch_var.clone(), padded_c.clone()])?;
         pseudonym_var.conditional_enforce_equal(&padded_p, &inactive_var)?;
 
         Ok(RowVars {
@@ -236,6 +289,95 @@ fn enforce_bit_width(
     value.conditional_enforce_equal(&low, guard) // high bits must be zero when guarded
 }
 
+/// Enforce the diminishing-returns cap on an active row's claimed `weight`.
+///
+/// Proves `weight == floor(minutes·price·region · D(plays) / 1e6)` — bit-for-bit
+/// the native `crate::dr::weight_of` — in two parts, both gated on `active`:
+///
+/// 1. **DR lookup.** `D(plays)` is selected from the constant table
+///    `d_ppm_table(K_PPM_CIRCUIT)` by a one-hot selector `s_0..s_63`: exactly one
+///    bit is set (`Σ s_i == 1`), its index equals `plays-1` (`Σ i·s_i == plays-1`),
+///    and the chosen multiplier is `d == Σ s_i·table_i`. Because the index sum
+///    lands in `[0, 63]` while `plays==0` would require it to equal the field
+///    value `-1`, an active `plays == 0` is implicitly rejected (matching the
+///    fact that `weight_of` clamps `plays` to `>= 1`).
+/// 2. **Proven floor division.** With `value == minutes·price·region` (exact in
+///    the field — every factor is bit-bounded so the product stays far below the
+///    modulus), enforce `weight·1e6 + r == value·d` and `0 <= r < 1e6`. That pins
+///    `weight` to the floor of `value·d/1e6` and `r` to the remainder.
+///
+/// The remainder `r` is computed natively via modular reduction (`value·d` can
+/// exceed `u128`, so we reduce each factor mod `PPM_SCALE` first). The constraint
+/// system is taken from `weight_var` (all inputs share one system).
+fn enforce_dr_weight(
+    row: &RowWitness,
+    minutes_var: &FpVar<Fr>,
+    plays_var: &FpVar<Fr>,
+    price_var: &FpVar<Fr>,
+    region_var: &FpVar<Fr>,
+    weight_var: &FpVar<Fr>,
+    active: &Boolean<Fr>,
+) -> Result<(), SynthesisError> {
+    // All allocated vars live in the same system; reuse it for the new witnesses.
+    let cs = weight_var.cs();
+    // The constant DR multiplier table `D(1..=64)` in ppm at the neutral curvature.
+    let table = crate::dr::d_ppm_table(K_PPM_CIRCUIT);
+
+    // The hot selector index, clamped like `weight_of` (`plays` 0 → index 0). For
+    // active rows `plays` is in `[1, 64]`, so the clamp is a no-op there; it only
+    // gives padding/degenerate rows a well-formed witness (their sum checks below
+    // are not enforced, being gated on `active`).
+    let hot = (row.plays.clamp(1, MAX_PLAYS_CIRCUIT) - 1) as usize;
+
+    // Allocate one boolean selector per table slot.
+    let mut selectors = Vec::with_capacity(MAX_PLAYS_CIRCUIT as usize);
+    for i in 0..MAX_PLAYS_CIRCUIT as usize {
+        selectors.push(Boolean::new_witness(cs.clone(), || Ok(i == hot))?);
+    }
+
+    // Accumulate the three selector sums in one pass.
+    let mut sum_sel = FpVar::<Fr>::zero(); // Σ s_i
+    let mut sum_idx = FpVar::<Fr>::zero(); // Σ i·s_i
+    let mut d_var = FpVar::<Fr>::zero(); // Σ s_i·table_i (the selected D(plays))
+    for (i, s) in selectors.iter().enumerate() {
+        let s_fp = FpVar::from(s.clone()); // boolean → {0,1} field element
+        let idx_c = FpVar::constant(fr_from_u128(i as u128)); // slot index constant
+        let tab_c = FpVar::constant(fr_from_u128(table[i] as u128)); // D(i+1) constant
+        sum_sel = &sum_sel + &s_fp;
+        sum_idx = &sum_idx + &(&s_fp * &idx_c);
+        d_var = &d_var + &(&s_fp * &tab_c);
+    }
+
+    // Exactly one slot selected, and its index is `plays-1` (ties `d` to `plays`).
+    sum_sel.conditional_enforce_equal(&FpVar::one(), active)?;
+    let plays_minus_one = plays_var - FpVar::one(); // valid: active plays >= 1
+    sum_idx.conditional_enforce_equal(&plays_minus_one, active)?;
+
+    // `value = minutes·price·region`, exact in-field (factors are bit-bounded).
+    let value_var = &(minutes_var * price_var) * region_var;
+
+    // Native remainder `r = (value·d) mod 1e6`. Reduce each factor mod `PPM_SCALE`
+    // first so the intermediate product cannot overflow `u128`.
+    let value_native = (row.minutes as u128) * (row.price_ppm as u128) * (row.region_ppm as u128);
+    let d_native = table[hot] as u128;
+    let r_native = ((value_native % PPM_SCALE) * (d_native % PPM_SCALE)) % PPM_SCALE;
+    let r_var = FpVar::new_witness(cs.clone(), || Ok(fr_from_u128(r_native)))?;
+
+    // Proven floor division: `weight·1e6 + r == value·d`.
+    let scale = FpVar::constant(fr_from_u128(PPM_SCALE));
+    let lhs = &(weight_var * &scale) + &r_var;
+    let rhs = &value_var * &d_var;
+    lhs.conditional_enforce_equal(&rhs, active)?;
+
+    // Range-check `0 <= r < 1e6`: `r` fits in 20 bits (so it does not wrap the
+    // field), and `PPM_SCALE-1 - r` also fits in 20 bits (so `r <= 999_999`).
+    enforce_bit_width(&r_var, REMAINDER_BITS, active)?;
+    let r_slack = &FpVar::constant(fr_from_u128(PPM_SCALE - 1)) - &r_var;
+    enforce_bit_width(&r_slack, REMAINDER_BITS, active)?;
+
+    Ok(())
+}
+
 impl ConstraintSynthesizer<Fr> for UsageCircuit {
     /// Emit the constraints for every row. This task enforces per-row commitment
     /// correctness, range bounds and well-formed padding; the DR-cap + pseudonym
@@ -246,10 +388,17 @@ impl ConstraintSynthesizer<Fr> for UsageCircuit {
         // for now it is a placeholder so the system stays satisfiable.
         let _digest_var = FpVar::new_witness(cs.clone(), || Ok(fr_from_bytes32(&self.digest)))?;
 
+        // Allocate the per-epoch pseudonym key ONCE as a single witness variable.
+        // Every row's active/inactive pseudonym is derived from this same variable,
+        // so a prover cannot pick an inconsistent `k_epoch` between rows — the
+        // fixed Groth16 circuit stays sound. (It is a witness, not a public input:
+        // the epoch key is the user's secret; Task 8 binds the public digest.)
+        let k_epoch_var = FpVar::new_witness(cs.clone(), || Ok(fr_from_bytes32(&self.k_epoch)))?;
+
         // Constrain each row uniformly; `RowVars` are collected for later tasks
         // even though this task consumes only the per-row checks inside `enforce_row`.
         for row in &self.rows {
-            let _vars = self.enforce_row(cs.clone(), row)?;
+            let _vars = self.enforce_row(cs.clone(), row, &k_epoch_var)?;
         }
         Ok(())
     }
@@ -363,6 +512,29 @@ mod tests {
         bad.rows[0].commitment = [0xEE; 32];
         let cs2 = ConstraintSystem::<crate::field::Fr>::new_ref();
         bad.generate_constraints(cs2.clone()).unwrap();
+        assert!(!cs2.is_satisfied().unwrap());
+    }
+
+    /// The DR-cap and epoch-binding constraints reject a row whose `weight` is
+    /// inflated by one (breaking the proven floor division) and a row whose
+    /// `pseudonym` does not equal `Poseidon(k_epoch, commitment)`.
+    #[test]
+    fn weight_and_pseudonym_constraints() {
+        use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem};
+        let base = super::test_row(&[1u8; 32], 60, 2, &[9u8; 32], 1_000_000, 1_000_000);
+
+        // Inflated weight → violated.
+        let mut infl = super::test_circuit(vec![base.clone()]);
+        infl.rows[0].weight += 1;
+        let cs = ConstraintSystem::<crate::field::Fr>::new_ref();
+        infl.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+
+        // Wrong pseudonym → violated.
+        let mut wp = super::test_circuit(vec![base]);
+        wp.rows[0].pseudonym = [0x77; 32];
+        let cs2 = ConstraintSystem::<crate::field::Fr>::new_ref();
+        wp.generate_constraints(cs2.clone()).unwrap();
         assert!(!cs2.is_satisfied().unwrap());
     }
 }
