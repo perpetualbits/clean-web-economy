@@ -3,11 +3,14 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {CWERegistry} from "../contracts/CWERegistry.sol";
+import {CWEIdentity} from "../contracts/CWEIdentity.sol";
+import {CredentialTypes} from "../contracts/CredentialTypes.sol";
 
 /// @title CWERegistryTest
 /// @notice Unit tests for work registration, split validation, and update rules.
 contract CWERegistryTest is Test {
     CWERegistry internal registry;
+    CWEIdentity internal identity;
     address internal owner = makeAddr("owner");
     address internal creator = makeAddr("creator");
     address internal other = makeAddr("other");
@@ -19,13 +22,18 @@ contract CWERegistryTest is Test {
     uint256 internal payee1Key;
     uint256 internal payee2Key;
 
-    /// @notice Deploy as owner, allowlist `creator`, and mint keyed payees so
-    ///         consent signatures can be produced for the default split.
+    /// @notice Deploy as owner, attest `creator`'s verified-creator credential, and
+    ///         mint keyed payees so consent signatures can be produced for the
+    ///         default split.
     function setUp() public {
         vm.prank(owner);
-        registry = new CWERegistry(owner);
+        identity = new CWEIdentity(owner);
         vm.prank(owner);
-        registry.setVerifiedCreator(creator, true);
+        identity.setIssuer(owner, true);
+        vm.prank(owner);
+        registry = new CWERegistry(owner, identity);
+        vm.prank(owner);
+        identity.attest(creator, CredentialTypes.VERIFIED_CREATOR, type(uint64).max);
 
         (address p1, uint256 k1) = makeAddrAndKey("payee1");
         (address p2, uint256 k2) = makeAddrAndKey("payee2");
@@ -78,6 +86,21 @@ contract CWERegistryTest is Test {
         registry.registerWork(WORK, CONTENT, payees, splits, sigs, 1000, bytes32("EU"));
     }
 
+    /// @notice A creator whose credential was revoked can no longer register,
+    ///         even though they held a valid credential a moment earlier — the
+    ///         gate is live, not a one-time allowlist check.
+    function test_register_revokedCredential_reverts() public {
+        (address payable[] memory payees, uint96[] memory splits) = _splitArrays();
+        bytes[] memory sigs = _defaultConsents(splits);
+
+        vm.prank(owner);
+        identity.revoke(creator, CredentialTypes.VERIFIED_CREATOR);
+
+        vm.prank(creator);
+        vm.expectRevert(CWERegistry.NotVerifiedCreator.selector);
+        registry.registerWork(WORK, CONTENT, payees, splits, sigs, 1000, bytes32("EU"));
+    }
+
     /// @notice Splits that do not sum to 1_000_000 ppm are rejected.
     function test_register_splitsNotFull_reverts() public {
         (address payable[] memory payees, uint96[] memory splits) = _splitArrays();
@@ -122,9 +145,9 @@ contract CWERegistryTest is Test {
         vm.prank(creator);
         registry.registerWork(WORK, CONTENT, payees, splits, sigs, 1000, bytes32("EU"));
 
-        // Allowlist `other`, but they still cannot update someone else's work.
+        // Credential `other`, but they still cannot update someone else's work.
         vm.prank(owner);
-        registry.setVerifiedCreator(other, true);
+        identity.attest(other, CredentialTypes.VERIFIED_CREATOR, type(uint64).max);
         vm.prank(other);
         vm.expectRevert(CWERegistry.NotRegistrant.selector);
         registry.registerWork(WORK, CONTENT, payees, splits, sigs, 2000, bytes32("US"));
@@ -175,7 +198,7 @@ contract CWERegistryTest is Test {
         (address alice, uint256 aliceK) = makeAddrAndKey("alice");
         (address bob, uint256 bobK) = makeAddrAndKey("bob");
         vm.prank(owner);
-        registry.setVerifiedCreator(creator, true);
+        identity.attest(creator, CredentialTypes.VERIFIED_CREATOR, type(uint64).max);
 
         bytes32 workId = keccak256("song-A");
         bytes32 contentId = keccak256("content-A");
@@ -200,7 +223,7 @@ contract CWERegistryTest is Test {
     function test_register_badConsent_reverts() public {
         (address alice, ) = makeAddrAndKey("alice");
         (, uint256 malloryK) = makeAddrAndKey("mallory");
-        vm.prank(owner); registry.setVerifiedCreator(creator, true);
+        vm.prank(owner); identity.attest(creator, CredentialTypes.VERIFIED_CREATOR, type(uint64).max);
 
         bytes32 workId = keccak256("song-B"); bytes32 contentId = keccak256("content-B");
         address payable[] memory payees = new address payable[](1);

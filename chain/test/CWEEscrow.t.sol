@@ -6,6 +6,8 @@ import {CWEEscrow} from "../contracts/CWEEscrow.sol";
 import {CWERegistry} from "../contracts/CWERegistry.sol";
 import {EarliestRegistrationArbiter} from "../contracts/EarliestRegistrationArbiter.sol";
 import {CWEJury} from "../contracts/CWEJury.sol";
+import {CWEIdentity} from "../contracts/CWEIdentity.sol";
+import {CredentialTypes} from "../contracts/CredentialTypes.sol";
 
 /// @notice A payee that tries to re-enter `release` when it receives ETH, used
 ///         to prove the reentrancy guard blocks nested releases.
@@ -46,6 +48,7 @@ contract CWEEscrowTest is Test {
     CWERegistry internal registry;
     EarliestRegistrationArbiter internal arbiter;
     CWEJury internal jury;
+    CWEIdentity internal identity;
 
     address internal owner = makeAddr("owner");
     address internal creator = makeAddr("creator");
@@ -70,12 +73,14 @@ contract CWEEscrowTest is Test {
     ///         for two distinct works so consent signatures can be produced.
     function setUp() public {
         vm.startPrank(owner);
-        registry = new CWERegistry(owner);
-        registry.setVerifiedCreator(creator, true);
+        identity = new CWEIdentity(owner);
+        identity.setIssuer(owner, true);
+        registry = new CWERegistry(owner, identity);
+        identity.attest(creator, CredentialTypes.VERIFIED_CREATOR, type(uint64).max);
         vm.stopPrank();
 
         arbiter = new EarliestRegistrationArbiter(registry);
-        jury = new CWEJury(owner, arbiter);
+        jury = new CWEJury(owner, arbiter, identity);
         escrow = new CWEEscrow(registry, aggregator, jury);
         vm.prank(owner);
         jury.setEscrow(address(escrow));
@@ -621,8 +626,8 @@ contract CWEEscrowTest is Test {
         address juror1 = makeAddr("juror1");
         address juror2 = makeAddr("juror2");
         vm.startPrank(owner);
-        jury.setJuror(juror1, true);
-        jury.setJuror(juror2, true);
+        identity.attest(juror1, CredentialTypes.JUROR, type(uint64).max);
+        identity.attest(juror2, CredentialTypes.JUROR, type(uint64).max);
         vm.stopPrank();
 
         escrow.challenge(EPOCH, escrowedWork, challengerWork);

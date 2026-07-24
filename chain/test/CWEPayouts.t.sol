@@ -4,6 +4,8 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {CWEPayouts} from "../contracts/CWEPayouts.sol";
 import {CWERegistry} from "../contracts/CWERegistry.sol";
+import {CWEIdentity} from "../contracts/CWEIdentity.sol";
+import {CredentialTypes} from "../contracts/CredentialTypes.sol";
 
 /// @notice A payee that tries to re-enter `withdraw` when it receives ETH, used
 ///         to prove the reentrancy guard blocks nested withdrawals.
@@ -46,6 +48,7 @@ contract ReentrantPayee {
 contract CWEPayoutsTest is Test {
     CWEPayouts internal payouts;
     CWERegistry internal registry;
+    CWEIdentity internal identity;
     address internal owner = makeAddr("owner");
     address internal creator = makeAddr("creator");
     address internal aggregator = makeAddr("aggregator");
@@ -64,8 +67,10 @@ contract CWEPayoutsTest is Test {
     /// @notice Deploy registry + payouts, register WORK_A with a 60/40 split.
     function setUp() public {
         vm.startPrank(owner);
-        registry = new CWERegistry(owner);
-        registry.setVerifiedCreator(creator, true);
+        identity = new CWEIdentity(owner);
+        identity.setIssuer(owner, true);
+        registry = new CWERegistry(owner, identity);
+        identity.attest(creator, CredentialTypes.VERIFIED_CREATOR, type(uint64).max);
         vm.stopPrank();
 
         payouts = new CWEPayouts(registry, aggregator);

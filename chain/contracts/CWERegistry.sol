@@ -2,14 +2,16 @@
 pragma solidity ^0.8.24;
 
 import {ICWERegistry} from "./interfaces/ICWERegistry.sol";
+import {ICWEIdentity} from "./interfaces/ICWEIdentity.sol";
+import {CredentialTypes} from "./CredentialTypes.sol";
 import {Ownable} from "./utils/Ownable.sol";
 
 /// @title CWERegistry
 /// @notice Registry mapping each work to its payees and their payout splits.
-/// @dev Hardens the Phase 0 draft with: a verified-creator allowlist (a stand-in
-///      for real SSI/VC identity, which is Phase 3+), strict split validation
-///      (shares must sum to 1_000_000 ppm), and update rules (only the original
-///      registrant may re-register a work).
+/// @dev Hardens the Phase 0 draft with: a verified-creator credential gate (via
+///      `ICWEIdentity`, replacing the earlier owner-managed allowlist), strict
+///      split validation (shares must sum to 1_000_000 ppm), and update rules
+///      (only the original registrant may re-register a work).
 contract CWERegistry is ICWERegistry, Ownable {
     /// @notice The ppm denominator: every work's splits must sum to exactly this.
     uint96 public constant PPM_TOTAL = 1_000_000;
@@ -29,15 +31,13 @@ contract CWERegistry is ICWERegistry, Ownable {
     /// @dev workId => stored record.
     mapping(bytes32 => Work) private _works;
 
-    /// @notice Whether an address is an allowlisted (verified) creator.
-    mapping(address => bool) public isVerifiedCreator;
+    /// @notice The credential registry consulted to gate work registration.
+    ICWEIdentity public immutable identity;
 
     /// @notice Emitted when a work is registered for the first time.
     event WorkRegistered(bytes32 indexed workId, address indexed registrant);
     /// @notice Emitted when an existing work is updated by its registrant.
     event WorkUpdated(bytes32 indexed workId, address indexed registrant);
-    /// @notice Emitted when the owner adds or removes a verified creator.
-    event VerifiedCreatorSet(address indexed creator, bool verified);
 
     /// @dev Reverts when a non-verified address tries to register a work.
     error NotVerifiedCreator();
@@ -54,15 +54,10 @@ contract CWERegistry is ICWERegistry, Ownable {
     /// @dev Reverts when a payee's consent signature does not recover to that payee.
     error BadConsent();
 
-    /// @param initialOwner The address allowed to manage the creator allowlist.
-    constructor(address initialOwner) Ownable(initialOwner) {}
-
-    /// @notice Add or remove a verified creator (the Phase 1 identity stand-in).
-    /// @param creator The creator address.
-    /// @param verified True to allow registration, false to revoke.
-    function setVerifiedCreator(address creator, bool verified) external onlyOwner {
-        isVerifiedCreator[creator] = verified;
-        emit VerifiedCreatorSet(creator, verified);
+    /// @param initialOwner The address that owns this registry deployment.
+    /// @param identity_ The credential registry consulted for the verified-creator gate.
+    constructor(address initialOwner, ICWEIdentity identity_) Ownable(initialOwner) {
+        identity = identity_;
     }
 
     /// @inheritdoc ICWERegistry
@@ -80,8 +75,8 @@ contract CWERegistry is ICWERegistry, Ownable {
         uint256 pricePerMin,
         bytes32 regionRule
     ) external {
-        // Only allowlisted creators may register or update works.
-        if (!isVerifiedCreator[msg.sender]) revert NotVerifiedCreator();
+        // A creator must hold a currently-valid verified-creator credential.
+        if (!identity.isValid(msg.sender, CredentialTypes.VERIFIED_CREATOR)) revert NotVerifiedCreator();
         // Validate the payee/split arrays before touching storage.
         _validateSplits(payees, splits);
         // Exactly one consent signature per payee (guards a too-short/too-long array).

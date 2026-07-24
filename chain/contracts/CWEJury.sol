@@ -3,20 +3,22 @@ pragma solidity ^0.8.24;
 
 import {IJury} from "./interfaces/IJury.sol";
 import {IArbiter} from "./interfaces/IArbiter.sol";
+import {ICWEIdentity} from "./interfaces/ICWEIdentity.sol";
+import {CredentialTypes} from "./CredentialTypes.sol";
 import {Ownable} from "./utils/Ownable.sol";
 
 /// @title CWEJury
 /// @notice A trusted committee that resolves fingerprint-escrow ownership
 ///         disputes by majority vote. It is the Phase 2.3 replacement for the
 ///         instant earliest-registration rule: `CWEEscrow` opens a dispute on
-///         challenge, allowlisted jurors vote over a window, and the tallied
+///         challenge, credentialed jurors vote over a window, and the tallied
 ///         verdict moves the escrow.
-/// @dev This is deliberately a *trusted* stub — the owner appoints jurors — that
-///      fills the unavoidable human-judgment layer. A future staked, open court
-///      (commit-reveal voting, slashing) can replace it behind the same `IJury`
-///      seam without touching the escrow's money logic. A tie or a silent
-///      committee falls back to the existing `EarliestRegistrationArbiter`, so
-///      the H1 safety default is preserved.
+/// @dev This is deliberately a *trusted* stub — the owner curates which issuers
+///      can attest juror credentials — that fills the unavoidable human-judgment
+///      layer. A future staked, open court (commit-reveal voting, slashing) can
+///      replace it behind the same `IJury` seam without touching the escrow's
+///      money logic. A tie or a silent committee falls back to the existing
+///      `EarliestRegistrationArbiter`, so the H1 safety default is preserved.
 contract CWEJury is IJury, Ownable {
     /// @notice How long a dispute stays open for voting. A 3-week floor: jurors
     ///         need time to coordinate across weekends and gather evidence, so a
@@ -30,8 +32,8 @@ contract CWEJury is IJury, Ownable {
     /// @notice The only contract permitted to open disputes (the escrow).
     address public escrow;
 
-    /// @notice Whether an address is an allowlisted juror.
-    mapping(address => bool) public isJuror;
+    /// @notice The credential registry consulted to gate juror votes.
+    ICWEIdentity public immutable identity;
 
     /// @dev Monotonic id source; ids start at 1 so 0 always means "no dispute".
     uint256 private _nextDisputeId;
@@ -54,8 +56,6 @@ contract CWEJury is IJury, Ownable {
 
     /// @notice Emitted when the authorised escrow is set.
     event EscrowSet(address indexed escrow);
-    /// @notice Emitted when a juror is added to or removed from the allowlist.
-    event JurorSet(address indexed juror, bool allowed);
     /// @notice Emitted when the escrow opens a dispute.
     event DisputeOpened(
         uint256 indexed disputeId, bytes32 indexed workA, bytes32 indexed workB, uint256 voteEnd
@@ -86,10 +86,14 @@ contract CWEJury is IJury, Ownable {
     /// @dev Reverts when reading a verdict that is not yet finalized.
     error NotFinalized(uint256 disputeId);
 
-    /// @param initialOwner The address that appoints jurors and the escrow.
+    /// @param initialOwner The address that appoints the escrow.
     /// @param fallbackArbiter_ The earliest-registration fallback for ties/silence.
-    constructor(address initialOwner, IArbiter fallbackArbiter_) Ownable(initialOwner) {
+    /// @param identity_ The credential registry consulted for the juror gate.
+    constructor(address initialOwner, IArbiter fallbackArbiter_, ICWEIdentity identity_)
+        Ownable(initialOwner)
+    {
         fallbackArbiter = fallbackArbiter_;
+        identity = identity_;
     }
 
     /// @notice Authorise the escrow that may open disputes. Settable once, so the
@@ -98,12 +102,6 @@ contract CWEJury is IJury, Ownable {
         if (escrow != address(0)) revert EscrowAlreadySet();
         escrow = escrow_;
         emit EscrowSet(escrow_);
-    }
-
-    /// @notice Add or remove an allowlisted juror (mirrors `setVerifiedCreator`).
-    function setJuror(address juror, bool allowed) external onlyOwner {
-        isJuror[juror] = allowed;
-        emit JurorSet(juror, allowed);
     }
 
     /// @inheritdoc IJury
@@ -120,7 +118,8 @@ contract CWEJury is IJury, Ownable {
 
     /// @notice Cast a juror's single vote for one of the two disputed works.
     function vote(uint256 disputeId, bytes32 forWork) external {
-        if (!isJuror[msg.sender]) revert NotJuror();
+        // A juror must hold a currently-valid juror credential.
+        if (!identity.isValid(msg.sender, CredentialTypes.JUROR)) revert NotJuror();
         Dispute storage d = _disputes[disputeId];
         if (d.voteEnd == 0) revert NoDispute(disputeId);
         if (d.finalized) revert AlreadyFinalized(disputeId);

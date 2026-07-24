@@ -5,11 +5,17 @@ import {Test} from "forge-std/Test.sol";
 import {CWEJury} from "../contracts/CWEJury.sol";
 import {CWERegistry} from "../contracts/CWERegistry.sol";
 import {EarliestRegistrationArbiter} from "../contracts/EarliestRegistrationArbiter.sol";
+import {CWEIdentity} from "../contracts/CWEIdentity.sol";
+import {CredentialTypes} from "../contracts/CredentialTypes.sol";
 
+/// @title CWEJuryTest
+/// @notice Unit tests for dispute opening, juror voting, majority/tie/fallback
+///         resolution, and admin controls.
 contract CWEJuryTest is Test {
     CWEJury internal jury;
     CWERegistry internal registry;
     EarliestRegistrationArbiter internal arbiter;
+    CWEIdentity internal identity;
 
     address internal owner = makeAddr("owner");
     address internal creator = makeAddr("creator");
@@ -28,13 +34,18 @@ contract CWEJuryTest is Test {
     uint256 internal payeeEKey;
     uint256 internal payeeLKey;
 
+    /// @notice Deploy the identity registry, registry, arbiter, and jury; attest
+    ///         `creator`'s verified-creator credential and each juror's juror
+    ///         credential; register the two competing works.
     function setUp() public {
         vm.startPrank(owner);
-        registry = new CWERegistry(owner);
-        registry.setVerifiedCreator(creator, true);
+        identity = new CWEIdentity(owner);
+        identity.setIssuer(owner, true);
+        registry = new CWERegistry(owner, identity);
+        identity.attest(creator, CredentialTypes.VERIFIED_CREATOR, type(uint64).max);
         vm.stopPrank();
         arbiter = new EarliestRegistrationArbiter(registry);
-        jury = new CWEJury(owner, arbiter);
+        jury = new CWEJury(owner, arbiter, identity);
         vm.prank(owner);
         jury.setEscrow(escrow);
 
@@ -46,9 +57,9 @@ contract CWEJuryTest is Test {
         vm.warp(1000); _register(workEarly, payeeE, payeeEKey);
         vm.warp(2000); _register(workLate, payeeL, payeeLKey);
 
-        vm.prank(owner); jury.setJuror(juror1, true);
-        vm.prank(owner); jury.setJuror(juror2, true);
-        vm.prank(owner); jury.setJuror(juror3, true);
+        vm.prank(owner); identity.attest(juror1, CredentialTypes.JUROR, type(uint64).max);
+        vm.prank(owner); identity.attest(juror2, CredentialTypes.JUROR, type(uint64).max);
+        vm.prank(owner); identity.attest(juror3, CredentialTypes.JUROR, type(uint64).max);
     }
 
     /// @dev Register `workId` with a single 100% consenting payee over CONTENT.
@@ -165,9 +176,8 @@ contract CWEJuryTest is Test {
         jury.verdictOf(id);
     }
 
-    /// @notice Only the owner may set jurors / the escrow.
+    /// @notice Only the owner may set the escrow.
     function test_admin_onlyOwner() public {
-        vm.expectRevert(); jury.setJuror(juror1, true);
         vm.expectRevert(); jury.setEscrow(escrow);
     }
 
