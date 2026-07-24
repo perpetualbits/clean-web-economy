@@ -102,7 +102,9 @@ warp() { cast rpc --rpc-url $RPC evm_increaseTime "$1" >/dev/null; cast rpc --rp
 
 # --- step 1: deploy --------------------------------------------------------
 step "1. Deploying contracts"
-( cd "$ROOT/chain" && PRIVATE_KEY=$DEPLOYER forge script script/Deploy.s.sol \
+# The legacy disclosure-flow demos submit empty proofs, so deploy the accept-all
+# verifier (the real Groth16 verifier would reject them).
+( cd "$ROOT/chain" && VERIFIER=accept-all PRIVATE_KEY=$DEPLOYER forge script script/Deploy.s.sol \
     --rpc-url $RPC --broadcast >/dev/null 2>&1 )
 DEP="$ROOT/chain/deployments/localhost.json"
 REG=$(jq -r .registry "$DEP"); TIERS=$(jq -r .tiers "$DEP")
@@ -180,8 +182,16 @@ commit() { cast keccak $(cast concat-hex "$1" $(cast to-uint256 "$2") $(cast to-
 SALT1=0x$(printf '11%.0s' {1..32}); SALT2=0x$(printf '22%.0s' {1..32})
 C1=$(commit $WORK_REAL 60 1 $SALT1)     # U1 -> real (signed)
 C2=$(commit $WORK_FRAUD 60 1 $SALT2)    # U2 -> fraud (unsigned/fingerprint)
-send $U1 $CONS "submitConsumption(bytes32,bytes32[],bytes)" $LIGHT "[$C1]" 0x
-send $U2 $CONS "submitConsumption(bytes32,bytes32[],bytes)" $LIGHT "[$C2]" 0x
+# The 7-arg submit binds openings, per-work pseudonyms/workIds/weights, a ZK
+# digest, and a proof. Disclosure mode + the accept-all verifier ignore the ZK
+# fields, but the four parallel arrays must match the commitments' length or the
+# call reverts ArityMismatch; each user submits a single commitment here. The
+# pseudonyms/workIds reuse the commitment and the weight is 1.
+ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
+send $U1 $CONS "submitConsumption(bytes32,bytes32[],bytes32[],bytes32[],uint256[],bytes32,bytes)" \
+  $LIGHT "[$C1]" "[$C1]" "[$C1]" "[1]" $ZERO32 0x
+send $U2 $CONS "submitConsumption(bytes32,bytes32[],bytes32[],bytes32[],uint256[],bytes32,bytes)" \
+  $LIGHT "[$C2]" "[$C2]" "[$C2]" "[1]" $ZERO32 0x
 EPOCH=$(cast call --rpc-url $RPC $CONS "currentEpoch()(uint256)")
 echo "  epoch = $EPOCH"
 

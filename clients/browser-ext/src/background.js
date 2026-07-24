@@ -15,9 +15,13 @@ import { JsonRpcProvider, Wallet, Contract } from "ethers";
 import { StaticHubClient, NetworkedHubClient } from "./hub.js";
 import { allows } from "./policy.js";
 
-// Minimal ABI for the one call the extension makes on-chain.
+// Minimal ABI for the one call the extension makes on-chain. The 7-arg form
+// binds the openings' commitments plus the ZK aggregate fields (per-work
+// pseudonyms/workIds/weights and a public-input digest) and a proof. The
+// extension runs the Phase 1 disclosure flow against the accept-all verifier, so
+// it fills the ZK fields with equal-length dummies and an empty proof.
 const CONSUMPTION_ABI = [
-  "function submitConsumption(bytes32 tierId, bytes32[] workCommitments, bytes proof) external",
+  "function submitConsumption(bytes32 tierId, bytes32[] commitments, bytes32[] pseudonyms, bytes32[] workIds, uint256[] weights, bytes32 digest, bytes proof) external",
 ];
 
 // Lazily-initialised singletons, set up by `ensureReady`.
@@ -172,7 +176,24 @@ async function handleSettle() {
   const provider = new JsonRpcProvider(cfg.rpcUrl);
   const signer = new Wallet(cfg.privateKey, provider);
   const consumption = new Contract(cfg.consumption, CONSUMPTION_ABI, signer);
-  const tx = await consumption.submitConsumption(cfg.tierId, commitments, "0x");
+  // The ZK aggregate fields are dummies here: the accept-all verifier ignores the
+  // proof/digest, and the aggregator recovers the real per-work weights from the
+  // exported openings, not from these event fields. `submitConsumption` still
+  // requires the four parallel arrays to share `commitments`' length, so reuse the
+  // commitments for the pseudonyms/workIds and pass unit weights and a zero digest.
+  const pseudonyms = commitments;
+  const workIds = commitments;
+  const weights = commitments.map(() => 1);
+  const zeroDigest = "0x" + "00".repeat(32);
+  const tx = await consumption.submitConsumption(
+    cfg.tierId,
+    commitments,
+    pseudonyms,
+    workIds,
+    weights,
+    zeroDigest,
+    "0x",
+  );
   const receipt = await tx.wait();
 
   return { ok: true, txHash: receipt.hash, commitments, openings };

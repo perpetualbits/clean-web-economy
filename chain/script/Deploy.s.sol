@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script} from "forge-std/Script.sol";
 import {Groth16Verifier} from "../contracts/Groth16Verifier.sol";
+import {AcceptAllVerifier} from "../contracts/AcceptAllVerifier.sol";
 import {CWEEpochBeacon} from "../contracts/CWEEpochBeacon.sol";
 import {CWEIdentity} from "../contracts/CWEIdentity.sol";
 import {CWERegistry} from "../contracts/CWERegistry.sol";
@@ -14,6 +15,7 @@ import {CWEEscrow} from "../contracts/CWEEscrow.sol";
 import {CWEJury} from "../contracts/CWEJury.sol";
 import {ICWEIdentity} from "../contracts/interfaces/ICWEIdentity.sol";
 import {IJury} from "../contracts/interfaces/IJury.sol";
+import {IProofVerifier} from "../contracts/interfaces/IProofVerifier.sol";
 
 /// @title Deploy
 /// @notice Deploys the full Phase 1 contract set and wires them together, then
@@ -59,9 +61,17 @@ contract Deploy is Script {
 
         vm.startBroadcast(deployerKey);
 
-        // The ZK seam: the real Groth16 verifier for the usage-proof circuit,
-        // baked with the devnet verifying key (decision D2 graduated in H2).
-        d.verifier = address(new Groth16Verifier());
+        // The ZK seam. `VERIFIER` selects which verifier backs `CWEConsumption`:
+        // the default `groth16` deploys the real Groth16 verifier (decision D2
+        // graduated in H2), while `accept-all` deploys the Phase 1 accept-all
+        // stub — the legacy disclosure-flow demos submit empty proofs, which only
+        // the accept-all verifier admits.
+        string memory verifierKind = vm.envOr("VERIFIER", string("groth16"));
+        if (keccak256(bytes(verifierKind)) == keccak256(bytes("accept-all"))) {
+            d.verifier = address(new AcceptAllVerifier());
+        } else {
+            d.verifier = address(new Groth16Verifier());
+        }
         // The epoch beacon: publishes the per-epoch key `K_epoch` that usage
         // proofs bind to, so a proof can't be replayed across epochs.
         d.beacon = address(new CWEEpochBeacon(d.owner));
@@ -73,8 +83,8 @@ contract Deploy is Script {
         d.registry = address(new CWERegistry(d.owner, ICWEIdentity(d.identity)));
         // The tier table / payment intake, owned by `owner`.
         d.tiers = address(new CWETiers(d.owner));
-        // The usage intake, checked by the verifier.
-        d.consumption = address(new CWEConsumption(Groth16Verifier(d.verifier)));
+        // The usage intake, checked by the verifier (whichever kind was selected).
+        d.consumption = address(new CWEConsumption(IProofVerifier(d.verifier)));
         // The payout ledger/pool, reading splits from the registry; only the
         // aggregator may commit epochs.
         d.payouts = address(new CWEPayouts(CWERegistry(d.registry), d.aggregator));

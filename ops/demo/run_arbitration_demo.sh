@@ -84,7 +84,9 @@ fail=0
 
 # --- step 1: deploy ----------------------------------------------------------
 step "1. Deploying contracts"
-( cd "$ROOT/chain" && PRIVATE_KEY=$DEPLOYER forge script script/Deploy.s.sol \
+# The legacy disclosure-flow demos submit empty proofs, so deploy the accept-all
+# verifier (the real Groth16 verifier would reject them).
+( cd "$ROOT/chain" && VERIFIER=accept-all PRIVATE_KEY=$DEPLOYER forge script script/Deploy.s.sol \
     --rpc-url $RPC --broadcast >/dev/null 2>&1 )
 DEP="$ROOT/chain/deployments/localhost.json"
 REG=$(jq -r .registry "$DEP"); TIERS=$(jq -r .tiers "$DEP")
@@ -159,7 +161,14 @@ echo "  payout pool: $(cast to-unit $(bal $PAY) ether) ETH"
 commit() { cast keccak $(cast concat-hex "$1" $(cast to-uint256 "$2") $(cast to-uint256 "$3") "$4"); }
 SALT=0x$(printf '33%.0s' {1..32})
 C=$(commit $WORK_FRAUD 60 1 $SALT)
-send $U2 $CONS "submitConsumption(bytes32,bytes32[],bytes)" $LIGHT "[$C]" 0x
+# The 7-arg submit binds openings, per-work pseudonyms/workIds/weights, a ZK
+# digest, and a proof. Disclosure mode + the accept-all verifier ignore the ZK
+# fields, but the four parallel arrays must match the commitments' length or the
+# call reverts ArityMismatch; a single commitment is submitted here. The
+# pseudonyms/workIds reuse the commitment and the weight is 1.
+ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
+send $U2 $CONS "submitConsumption(bytes32,bytes32[],bytes32[],bytes32[],uint256[],bytes32,bytes)" \
+  $LIGHT "[$C]" "[$C]" "[$C]" "[1]" $ZERO32 0x
 EPOCH=$(cast call --rpc-url $RPC $CONS "currentEpoch()(uint256)")
 echo "  epoch = $EPOCH"
 

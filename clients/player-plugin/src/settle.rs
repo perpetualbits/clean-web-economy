@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
 
-use alloy::primitives::{Address, FixedBytes, B256};
+use alloy::primitives::{Address, FixedBytes, B256, U256};
 use alloy::providers::ProviderBuilder;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
@@ -24,10 +24,24 @@ use serde::{Deserialize, Serialize};
 use crate::config::PlayerConfig;
 
 // The one on-chain call the agent makes: submit this epoch's usage commitments.
+// The 7-arg form binds the openings' commitments plus the ZK aggregate fields
+// (per-work pseudonyms/workIds/weights and a public-input digest) and a proof.
+// The agent runs the Phase 1 disclosure flow against the accept-all verifier, so
+// it fills the ZK fields with equal-length dummies and an empty proof; the four
+// parallel arrays must match `commitments`' length or the call reverts
+// `ArityMismatch`. Real proof generation is not part of the player.
 sol! {
     #[sol(rpc)]
     contract Consumption {
-        function submitConsumption(bytes32 tierId, bytes32[] workCommitments, bytes proof) external;
+        function submitConsumption(
+            bytes32 tierId,
+            bytes32[] commitments,
+            bytes32[] pseudonyms,
+            bytes32[] workIds,
+            uint256[] weights,
+            bytes32 digest,
+            bytes proof
+        ) external;
     }
 }
 
@@ -114,9 +128,27 @@ pub async fn submit_consumption(
         .map(|o| FixedBytes::from(o.commit().0 .0))
         .collect();
 
-    // Submit with an empty proof (Phase 1 accept-all verifier), await the receipt.
+    // The ZK aggregate fields are dummies here: the accept-all verifier ignores
+    // the proof/digest, and settlement recovers the real per-work weights from the
+    // disclosure openings, not from these event fields. Still, `submitConsumption`
+    // requires the four parallel arrays to have the same length as `commitments`,
+    // so reuse the commitments for the pseudonyms/workIds and pass unit weights.
+    let pseudonyms = commitments.clone();
+    let work_ids = commitments.clone();
+    let weights: Vec<U256> = commitments.iter().map(|_| U256::from(1)).collect();
+
+    // Submit with dummy ZK fields and an empty proof (Phase 1 accept-all
+    // verifier), then await the receipt.
     let pending = contract
-        .submitConsumption(tier, commitments, alloy::primitives::Bytes::new())
+        .submitConsumption(
+            tier,
+            commitments,
+            pseudonyms,
+            work_ids,
+            weights,
+            B256::ZERO,
+            alloy::primitives::Bytes::new(),
+        )
         .send()
         .await
         .map_err(|e| SettleError::Tx(e.to_string()))?;

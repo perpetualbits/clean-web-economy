@@ -90,7 +90,9 @@ callnum() { cast call --rpc-url $RPC "$@" | sed 's/ .*//'; }
 
 # --- step 1: deploy ----------------------------------------------------------
 step "1. Deploying contracts"
-( cd "$ROOT/chain" && PRIVATE_KEY=$DEPLOYER forge script script/Deploy.s.sol \
+# The player agent submits an empty proof via the disclosure flow, so deploy the
+# accept-all verifier (the real Groth16 verifier would reject it).
+( cd "$ROOT/chain" && VERIFIER=accept-all PRIVATE_KEY=$DEPLOYER forge script script/Deploy.s.sol \
     --rpc-url $RPC --broadcast >/dev/null 2>&1 )
 DEP="$ROOT/chain/deployments/localhost.json"
 REG=$(jq -r .registry "$DEP"); TIERS=$(jq -r .tiers "$DEP")

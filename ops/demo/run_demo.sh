@@ -52,7 +52,9 @@ send() { cast send --rpc-url $RPC --private-key "$1" "${@:2}" >/dev/null; }
 
 # --- step 1: deploy --------------------------------------------------------
 step "1. Deploying contracts"
-( cd "$ROOT/chain" && PRIVATE_KEY=$DEPLOYER forge script script/Deploy.s.sol \
+# The legacy disclosure-flow demos submit empty proofs, so deploy the accept-all
+# verifier (the real Groth16 verifier would reject them).
+( cd "$ROOT/chain" && VERIFIER=accept-all PRIVATE_KEY=$DEPLOYER forge script script/Deploy.s.sol \
     --rpc-url $RPC --broadcast >/dev/null 2>&1 )
 DEP="$ROOT/chain/deployments/localhost.json"
 REG=$(jq -r .registry "$DEP"); TIERS=$(jq -r .tiers "$DEP")
@@ -117,8 +119,16 @@ SALT2A=0x$(printf '21%.0s' {1..32}); SALT2C=0x$(printf '23%.0s' {1..32})
 # user2 listens workA 30min (1 play), workC 90min (1 play).
 C1A=$(commit $WORK_A 60 1 $SALT1A); C1B=$(commit $WORK_B 20 1 $SALT1B)
 C2A=$(commit $WORK_A 30 1 $SALT2A); C2C=$(commit $WORK_C 90 1 $SALT2C)
-send $U1 $CONS "submitConsumption(bytes32,bytes32[],bytes)" $LIGHT "[$C1A,$C1B]" 0x
-send $U2 $CONS "submitConsumption(bytes32,bytes32[],bytes)" $LIGHT "[$C2A,$C2C]" 0x
+# The 7-arg submit binds openings, per-work pseudonyms/workIds/weights, a ZK
+# digest, and a proof. Disclosure mode + the accept-all verifier ignore the ZK
+# fields, but the four parallel arrays must match the commitments' length or the
+# call reverts ArityMismatch; each user submits two commitments here. The
+# pseudonyms/workIds reuse the commitments array and the weights are all 1.
+ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
+send $U1 $CONS "submitConsumption(bytes32,bytes32[],bytes32[],bytes32[],uint256[],bytes32,bytes)" \
+  $LIGHT "[$C1A,$C1B]" "[$C1A,$C1B]" "[$C1A,$C1B]" "[1,1]" $ZERO32 0x
+send $U2 $CONS "submitConsumption(bytes32,bytes32[],bytes32[],bytes32[],uint256[],bytes32,bytes)" \
+  $LIGHT "[$C2A,$C2C]" "[$C2A,$C2C]" "[$C2A,$C2C]" "[1,1]" $ZERO32 0x
 EPOCH=$(cast call --rpc-url $RPC $CONS "currentEpoch()(uint256)")
 echo "epoch = $EPOCH"
 
