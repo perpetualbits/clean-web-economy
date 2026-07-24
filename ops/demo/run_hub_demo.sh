@@ -51,11 +51,19 @@ DEPLOYER_ADDR=$(cast wallet address $DEPLOYER)
 
 # --- deploy -------------------------------------------------------------
 ( cd "$ROOT/chain" && PRIVATE_KEY=$DEPLOYER forge script script/Deploy.s.sol --rpc-url $RPC --broadcast >/dev/null 2>&1 )
-REG=$(jq -r .registry "$ROOT/chain/deployments/localhost.json")
+DEP="$ROOT/chain/deployments/localhost.json"
+REG=$(jq -r .registry "$DEP")
+IDENTITY=$(jq -r .identity "$DEP")
 
 # --- register a work on-chain (deployer is owner + verified creator + registrant) ---
 send() { cast send --rpc-url $RPC --private-key "$1" "${@:2}" >/dev/null; }
-send $DEPLOYER $REG "setVerifiedCreator(address,bool)" $DEPLOYER_ADDR true
+# Make the deployer a trusted issuer, then attest it its own verified-creator
+# credential (far-future expiry) — the H6 replacement for the old
+# `setVerifiedCreator` allowlist call.
+send $DEPLOYER $IDENTITY "setIssuer(address,bool)" $DEPLOYER_ADDR true
+VC=$(cast keccak "cwe.credential.verified-creator")
+FAR=18446744073709551615   # type(uint64).max — effectively non-expiring
+send $DEPLOYER $IDENTITY "attest(address,bytes32,uint64)" $DEPLOYER_ADDR $VC $FAR
 WORK_ID=$(cast format-bytes32-string "workA"); EU=$(cast format-bytes32-string "EU")
 CONTENT_ID=$(cast keccak "content-workA")
 PAYEE=$(cast wallet address ${KEYS[2]})

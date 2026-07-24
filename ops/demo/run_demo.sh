@@ -57,14 +57,21 @@ step "1. Deploying contracts"
 DEP="$ROOT/chain/deployments/localhost.json"
 REG=$(jq -r .registry "$DEP"); TIERS=$(jq -r .tiers "$DEP")
 CONS=$(jq -r .consumption "$DEP"); PAY=$(jq -r .payouts "$DEP")
-echo "registry=$REG tiers=$TIERS consumption=$CONS payouts=$PAY"
+IDENTITY=$(jq -r .identity "$DEP")
+echo "registry=$REG tiers=$TIERS consumption=$CONS payouts=$PAY identity=$IDENTITY"
 
 # --- step 2: register 3 works ----------------------------------------------
 step "2. Registering 3 works"
 LIGHT=$(cast keccak "light"); FEE=1000000000000000000   # 1 ether tier fee
 PPM=1000000; EU=$(cast format-bytes32-string "EU")
 send $DEPLOYER $TIERS "setFee(bytes32,uint256)" $LIGHT $FEE
-send $DEPLOYER $REG "setVerifiedCreator(address,bool)" $(cast wallet address $DEPLOYER) true
+# Make the deployer a trusted issuer, then attest it its own verified-creator
+# credential (far-future expiry) — the H6 replacement for the old
+# `setVerifiedCreator` allowlist call.
+send $DEPLOYER $IDENTITY "setIssuer(address,bool)" $(cast wallet address $DEPLOYER) true
+VC=$(cast keccak "cwe.credential.verified-creator")
+FAR=18446744073709551615   # type(uint64).max — effectively non-expiring
+send $DEPLOYER $IDENTITY "attest(address,bytes32,uint64)" $(cast wallet address $DEPLOYER) $VC $FAR
 WORK_A=$(cast format-bytes32-string "workA")
 WORK_B=$(cast format-bytes32-string "workB")
 WORK_C=$(cast format-bytes32-string "workC")

@@ -96,12 +96,19 @@ DEP="$ROOT/chain/deployments/localhost.json"
 REG=$(jq -r .registry "$DEP"); TIERS=$(jq -r .tiers "$DEP")
 CONS=$(jq -r .consumption "$DEP"); PAY=$(jq -r .payouts "$DEP")
 ESCROW=$(jq -r .escrow "$DEP")
-echo "registry=$REG payouts=$PAY escrow=$ESCROW"
+IDENTITY=$(jq -r .identity "$DEP")
+echo "registry=$REG payouts=$PAY escrow=$ESCROW identity=$IDENTITY"
 
 LIGHT=$(cast keccak "light"); FEE=1000000000000000000  # 1 ether tier fee
 PPM=1000000; EU=$(cast format-bytes32-string "EU")
 send $DEPLOYER $TIERS "setFee(bytes32,uint256)" $LIGHT $FEE
-send $DEPLOYER $REG "setVerifiedCreator(address,bool)" "$DEPLOYER_ADDR" true
+# Make the deployer a trusted issuer, then attest it its own verified-creator
+# credential (far-future expiry) — the H6 replacement for the old
+# `setVerifiedCreator` allowlist call.
+send $DEPLOYER $IDENTITY "setIssuer(address,bool)" "$DEPLOYER_ADDR" true
+VC=$(cast keccak "cwe.credential.verified-creator")
+FAR=18446744073709551615   # type(uint64).max — effectively non-expiring
+send $DEPLOYER $IDENTITY "attest(address,bytes32,uint64)" "$DEPLOYER_ADDR" $VC $FAR
 
 # --- step 2: generate the WAV fixtures ---------------------------------------
 # 65 seconds each — just over a full minute — because the session store floors

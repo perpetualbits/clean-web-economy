@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Script} from "forge-std/Script.sol";
 import {AcceptAllVerifier} from "../contracts/AcceptAllVerifier.sol";
+import {CWEIdentity} from "../contracts/CWEIdentity.sol";
 import {CWERegistry} from "../contracts/CWERegistry.sol";
 import {CWETiers} from "../contracts/CWETiers.sol";
 import {CWEConsumption} from "../contracts/CWEConsumption.sol";
@@ -10,6 +11,7 @@ import {CWEPayouts} from "../contracts/CWEPayouts.sol";
 import {EarliestRegistrationArbiter} from "../contracts/EarliestRegistrationArbiter.sol";
 import {CWEEscrow} from "../contracts/CWEEscrow.sol";
 import {CWEJury} from "../contracts/CWEJury.sol";
+import {ICWEIdentity} from "../contracts/interfaces/ICWEIdentity.sol";
 import {IJury} from "../contracts/interfaces/IJury.sol";
 
 /// @title Deploy
@@ -30,6 +32,7 @@ contract Deploy is Script {
     ///      stack-depth limit.
     struct Deployed {
         address verifier;
+        address identity;
         address registry;
         address tiers;
         address consumption;
@@ -56,8 +59,12 @@ contract Deploy is Script {
 
         // The ZK seam: Phase 1 accepts every proof (decision D2).
         d.verifier = address(new AcceptAllVerifier());
+        // The credential registry (H6): the trusted-issuer source of truth that
+        // the registry and jury gate their verified-creator/juror checks on,
+        // replacing the old per-contract owner allowlists.
+        d.identity = address(new CWEIdentity(d.owner));
         // The work registry (payees/splits), owned by `owner`.
-        d.registry = address(new CWERegistry(d.owner));
+        d.registry = address(new CWERegistry(d.owner, ICWEIdentity(d.identity)));
         // The tier table / payment intake, owned by `owner`.
         d.tiers = address(new CWETiers(d.owner));
         // The usage intake, checked by the verifier.
@@ -70,7 +77,9 @@ contract Deploy is Script {
         // The Phase 2.3 jury: a trusted committee that resolves escrow disputes by
         // majority vote, falling back to the earliest-registration arbiter above
         // on a tie or a silent committee.
-        d.jury = address(new CWEJury(d.owner, EarliestRegistrationArbiter(d.arbiter)));
+        d.jury = address(
+            new CWEJury(d.owner, EarliestRegistrationArbiter(d.arbiter), ICWEIdentity(d.identity))
+        );
         // The fingerprint-match escrow: holds credit behind a challenge window,
         // consulting the jury on challenges and the registry for splits.
         d.escrow = address(new CWEEscrow(CWERegistry(d.registry), d.aggregator, IJury(d.jury)));
@@ -103,6 +112,7 @@ contract Deploy is Script {
         // returns the accumulated JSON so the last call holds the full object.
         string memory obj = "deployments";
         vm.serializeAddress(obj, "verifier", d.verifier);
+        vm.serializeAddress(obj, "identity", d.identity);
         vm.serializeAddress(obj, "registry", d.registry);
         vm.serializeAddress(obj, "tiers", d.tiers);
         vm.serializeAddress(obj, "consumption", d.consumption);

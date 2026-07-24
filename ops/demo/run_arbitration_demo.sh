@@ -90,20 +90,29 @@ DEP="$ROOT/chain/deployments/localhost.json"
 REG=$(jq -r .registry "$DEP"); TIERS=$(jq -r .tiers "$DEP")
 CONS=$(jq -r .consumption "$DEP"); PAY=$(jq -r .payouts "$DEP")
 ESCROW=$(jq -r .escrow "$DEP"); JURY=$(jq -r .jury "$DEP")
-echo "registry=$REG payouts=$PAY escrow=$ESCROW jury=$JURY"
+IDENTITY=$(jq -r .identity "$DEP")
+echo "registry=$REG payouts=$PAY escrow=$ESCROW jury=$JURY identity=$IDENTITY"
 
 LIGHT=$(cast keccak "light"); FEE=1000000000000000000   # 1 ether tier fee
 PRICE=1000000; EU=$(cast format-bytes32-string "EU")
 send $DEPLOYER $TIERS "setFee(bytes32,uint256)" $LIGHT $FEE
-send $DEPLOYER $REG "setVerifiedCreator(address,bool)" $(cast wallet address $DEPLOYER) true
+# Make the deployer a trusted issuer, then attest it its own verified-creator
+# credential (far-future expiry) — the H6 replacement for the old
+# `setVerifiedCreator` allowlist call.
+send $DEPLOYER $IDENTITY "setIssuer(address,bool)" $(cast wallet address $DEPLOYER) true
+VC=$(cast keccak "cwe.credential.verified-creator")
+FAR=18446744073709551615   # type(uint64).max — effectively non-expiring
+send $DEPLOYER $IDENTITY "attest(address,bytes32,uint64)" $(cast wallet address $DEPLOYER) $VC $FAR
 
 # --- step 2: appoint the 3-juror committee ----------------------------------
-# `setEscrow` was already called by the deploy script; here the owner
-# allowlists the three jurors who will vote on disputes.
+# `setEscrow` was already called by the deploy script; here the deployer
+# attests each juror a JUROR credential — the H6 replacement for the old
+# `setJuror` allowlist call on CWEJury itself.
 step "2. Appointing a 3-juror committee"
-send $DEPLOYER $JURY "setJuror(address,bool)" $J1 true
-send $DEPLOYER $JURY "setJuror(address,bool)" $J2 true
-send $DEPLOYER $JURY "setJuror(address,bool)" $J3 true
+JUROR=$(cast keccak "cwe.credential.juror")
+send $DEPLOYER $IDENTITY "attest(address,bytes32,uint64)" $J1 $JUROR $FAR
+send $DEPLOYER $IDENTITY "attest(address,bytes32,uint64)" $J2 $JUROR $FAR
+send $DEPLOYER $IDENTITY "attest(address,bytes32,uint64)" $J3 $JUROR $FAR
 echo "  jurors: $J1 / $J2 / $J3"
 
 # --- step 3: the fraudster registers FIRST ----------------------------------

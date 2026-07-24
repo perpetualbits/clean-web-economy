@@ -108,7 +108,8 @@ DEP="$ROOT/chain/deployments/localhost.json"
 REG=$(jq -r .registry "$DEP"); TIERS=$(jq -r .tiers "$DEP")
 CONS=$(jq -r .consumption "$DEP"); PAY=$(jq -r .payouts "$DEP")
 ESCROW=$(jq -r .escrow "$DEP"); JURY=$(jq -r .jury "$DEP")
-echo "registry=$REG payouts=$PAY escrow=$ESCROW jury=$JURY"
+IDENTITY=$(jq -r .identity "$DEP")
+echo "registry=$REG payouts=$PAY escrow=$ESCROW jury=$JURY identity=$IDENTITY"
 
 # --- step 2: register the real owner's multi-collaborator song -------------
 # The registrant reads each payee's consent digest on-chain and has that payee
@@ -120,7 +121,13 @@ step "2. Registering the real owner's song (band + musician + designer)"
 LIGHT=$(cast keccak "light"); FEE=1000000000000000000   # 1 ether tier fee
 PPM=1000000; EU=$(cast format-bytes32-string "EU")
 send $DEPLOYER $TIERS "setFee(bytes32,uint256)" $LIGHT $FEE
-send $DEPLOYER $REG "setVerifiedCreator(address,bool)" $(cast wallet address $DEPLOYER) true
+# Make the deployer a trusted issuer, then attest it its own verified-creator
+# credential (far-future expiry) — the H6 replacement for the old
+# `setVerifiedCreator` allowlist call.
+send $DEPLOYER $IDENTITY "setIssuer(address,bool)" $(cast wallet address $DEPLOYER) true
+VC=$(cast keccak "cwe.credential.verified-creator")
+FAR=18446744073709551615   # type(uint64).max — effectively non-expiring
+send $DEPLOYER $IDENTITY "attest(address,bytes32,uint64)" $(cast wallet address $DEPLOYER) $VC $FAR
 
 # Both works share ONE content id: the real recording and the fraudster's copy
 # are the same bytes. The registry keys challenge eligibility on this content id.

@@ -251,6 +251,36 @@ jobs:
         run: make -C ops arbitration-demo
 
   # ---------------------------------------------------------------------------
+  # Verifiable-credential lifecycle end-to-end demo: attest a verified-creator
+  # credential -> registration succeeds; a non-credentialed address is
+  # rejected; revoke -> blocked; a short-lived credential expires and is
+  # rejected; re-attesting revives it; removing the issuer invalidates every
+  # credential it granted; and a juror credential's attest/revoke transitions
+  # are checked directly (the on-chain vote gate over the same credential is
+  # covered by CWEJuryTest). Run headlessly on Anvil, same pattern as `e2e`
+  # above.
+  # ---------------------------------------------------------------------------
+  identity-e2e:
+    name: Verifiable-credential lifecycle demo (Anvil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # `jq` parses the deployment addresses inside the demo script.
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run the demo
+        run: make -C ops identity-demo
+
+  # ---------------------------------------------------------------------------
   # Anti-fraud demo: a deterministic proof of the DAPR model's core anti-fraud
   # properties — puppet plays are capped to break-even (never a profit),
   # bandwidth-discredited plays are a strict loss whose shortfall is conserved
