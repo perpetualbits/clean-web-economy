@@ -300,3 +300,34 @@ jobs:
 
       - name: Run the demo
         run: make -C ops antifraud-demo
+
+  # ---------------------------------------------------------------------------
+  # ZK usage-proof end-to-end demo: the H2 integrity capstone. Deploys the real
+  # on-chain Groth16 verifier (not the accept-all stub) and drives three acts —
+  # a genuine proof is submitted, accepted, and settles a real payout (honest
+  # pays); a tampered-digest submission is rejected by the on-chain verifier
+  # (inflation rejected); and splitting one work across two rows to dodge the
+  # diminishing-returns cap is refused by the prover itself (row-split
+  # rejected). Heavier than the other e2e jobs above: a release build plus a
+  # deterministic Groth16 trusted setup (~85s) and real proof generation, since
+  # on a fresh checkout the (gitignored) proving key does not yet exist.
+  # ---------------------------------------------------------------------------
+  zk-e2e:
+    name: ZK usage-proof end-to-end demo (Anvil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # `jq` parses the deployment addresses and the settlement's proof output.
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run the demo
+        run: make -C ops zk-demo

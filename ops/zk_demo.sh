@@ -36,6 +36,21 @@ cargo build --release --quiet -p cwe-settlement --manifest-path "$ROOT/Cargo.tom
 SETTLE="$ROOT/target/release/cwe-settlement"
 ZK_SUBMIT="$ROOT/target/release/zk_submit"
 
+# --- regenerate the devnet proving key if missing (fresh checkout) ---------
+# chain/zk/proving_key.bin is gitignored (17MB+); only verifying_key.bin is
+# committed. zk_submit needs the proving key to build a real proof, so on a
+# fresh checkout we regenerate BOTH keys via the deterministic devnet setup —
+# deterministic means the freshly-derived verifying key matches the one baked
+# into the Groth16Verifier we're about to deploy below, byte for byte.
+if [ ! -f "$ROOT/chain/zk/proving_key.bin" ]; then
+  step "Regenerating devnet proving key (missing)"
+  echo "regenerating devnet proving key (missing)... (~85s, deterministic)"
+  # export_keys writes to chain/zk/* and chain/test/fixtures/* relative to its
+  # OWN cwd (not --manifest-path), so it must be run from the repo root or it
+  # would scribble those paths under wherever the script happened to be invoked.
+  ( cd "$ROOT" && cargo run --release --quiet -p cwe-zk-circuits --bin export_keys )
+fi
+
 # --- start Anvil (stop only the process we start) --------------------------
 step "Starting Anvil devnet"
 anvil > "$WORKDIR/anvil.log" 2>&1 &
