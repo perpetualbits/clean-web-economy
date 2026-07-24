@@ -1018,85 +1018,96 @@ git add sims/src/lib.rs
 git commit -m "dapr: expose allocate_from_raw so settlement can pay from proven weights"
 ```
 
-### Task 18: Settlement — read proven weights, delete the disclosure file
+### Task 18: Settlement — dual-mode (keep disclosure for legacy; add proven-weights event path)
+
+> **Scope revised (2026-07-25, Roland's decision):** the disclosure file is NOT deleted. Settlement gains a SECOND mode that pays from proven event weights (the ZK path), while the existing disclosure mode stays for the four legacy demos (which keep AcceptAllVerifier). Mode is chosen at runtime: `DISCLOSURE` env set → disclosure mode (legacy); unset → event-weights mode (ZK). This keeps every demo green while the real ZK settlement path ships.
 
 **Files:**
 - Modify: `services/settlement/src/settle.rs`, `src/chain.rs`, `src/config.rs`, `src/lib.rs`
-- Delete: `services/settlement/src/disclosure.rs`
-- Test: `settle.rs`, `chain.rs`
+- Keep: `services/settlement/src/disclosure.rs` (retained; annotate its doc as the legacy path)
+- Test: `settle.rs`
 
 **Interfaces:**
-- Consumes: `cwe_dapr::{RawRow, allocate_from_raw}`, the extended `ConsumptionSubmitted` event, `CWEEpochBeacon.keyFor`.
-- Produces: `settle` takes proven raw rows instead of a `Dataset`; escrow routing derived from registry recognition.
+- Consumes: `cwe_dapr::{RawRow, allocate_from_raw}`, the extended `ConsumptionSubmitted` event, `CWEEpochBeacon.keyFor`, `cwe_zk_circuits::poseidon::digest` + `PublicRow`.
+- Produces: a `settle_raw(epoch, tier_fees, rows: &[RawRow], bandwidth_ppm, escrow_works) -> Settlement` alongside the existing `settle(...)`; both share one payouts→Merkle/escrow tail.
 
-- [ ] **Step 1: Update the failing tests** in `settle.rs` — rework `settle` to accept `tier_fees: &BTreeMap<String,u128>`, `rows: &[RawRow]`, `bandwidth_ppm`, and `escrow_works` (unchanged partition logic, but sourced from proven weights). Adapt the existing tests (`settle_conserves_and_proofs_verify`, `escrow_works_route_to_escrow`) to build `RawRow`s. The Merkle/escrow assertions stay.
+- [ ] **Step 1: Write the failing test** in `settle.rs` — add `settle_raw` and a test that it conserves fees and its proofs verify (build `RawRow`s directly), mirroring `settle_conserves_and_proofs_verify`. Keep the existing `settle` tests unchanged (disclosure path still supported).
 
 - [ ] **Step 2: Run to verify it fails.** Run: `cargo test -p cwe-settlement settle::`. Expected: FAIL.
 
 - [ ] **Step 3: Implement.**
-  - `settle.rs`: call `allocate_from_raw` instead of `allocate`; the rest (partition, Merkle, escrow) is unchanged.
-  - `chain.rs`: change the `sol!` `ConsumptionSubmitted` event to the extended shape; decode `workIds`/`weights` into `RawRow`s (user address as `UserId`, `workId` hex as `WorkId`, `weight` as `raw`); recompute `digest` via `cwe_zk_circuits::poseidon::digest` over the decoded `PublicRow`s and **reject any submission whose recomputed digest ≠ the event digest** (this is the off-chain half of the trust chain); read tier fees from `Tiers.feeOf`; derive `escrow_works` from the registry (a work whose signed registration is absent routes to escrow — add a `Registry.isSignedRegistered(bytes32) returns (bool)` view call, or reuse the existing recognition signal the chain layer already reads; if none exists, read the registry's content-id presence). Remove all `Disclosure` use.
-  - `config.rs`: drop `disclosure_path`; add the `beacon` deployment address (needed to read `K_epoch` for the digest recomputation).
-  - `lib.rs`: remove `pub mod disclosure;`.
+  - `settle.rs`: extract the current payouts→partition→Merkle/escrow tail of `settle` into a private helper `fn finalize(epoch, payouts: Payouts, escrow_works) -> Result<Settlement, SettleError>`. Keep `settle(epoch, dataset, escrow_works)` (calls `allocate` then `finalize`). Add `pub fn settle_raw(epoch, tier_fees: &BTreeMap<String,u128>, rows: &[RawRow], bandwidth_ppm: &BTreeMap<String,u64>, escrow_works) -> Result<Settlement, SettleError>` (calls `allocate_from_raw` then `finalize`). Both share `finalize`.
+  - `chain.rs`: update the `sol!` `ConsumptionSubmitted` event to the new shape `(address user, uint256 epoch, bytes32 tierId, bytes32 digest, bytes32[] pseudonyms, bytes32[] workIds, uint256[] weights)`. Branch on mode:
+    - **Disclosure mode** (`cfg.disclosure_path.is_some()`): read submitting `(user, epoch)` from events; load that user's `Opening`s from the disclosure file; build the `Dataset` as before; `escrow_works` from `disclosure.escrow_works`; call `settle`. NOTE: the event no longer carries `commitments`, so the old commitment-vs-event recompute is dropped — document this as a legacy-mode simplification (disclosure mode uses AcceptAllVerifier and is not the integrity path).
+    - **Event mode** (no disclosure path): for each submission decode `(pseudonyms, workIds, weights, digest)`; read `K_epoch = beacon.keyFor(epoch)`; **recompute the digest via `cwe_zk_circuits`** over the active `PublicRow`s padded to `MAX_WORKS` and **reject any submission whose recomputed digest ≠ the event digest** (the off-chain half of the trust chain); build `RawRow{user, work=workId hex, raw=weight}`; read tier fees from `Tiers.feeOf`; `escrow_works` = **empty for cycle-1** (all direct — registry-derived escrow-tier routing in event mode is a documented follow-on); call `settle_raw`.
+    - Add a small `sol!` binding for `CWEEpochBeacon { function keyFor(uint256) returns (bytes32); }`. For padding to `MAX_WORKS`, add (or reuse) a helper `cwe_zk_circuits::poseidon::digest_from_active(epoch, tier, k_epoch, &active) -> [u8;32]` that pads with canonical padded rows internally (add this small helper to `zk-circuits` if not present — it centralizes the padding convention; erroring if `active.len() > MAX_WORKS`).
+  - `config.rs`: make `disclosure_path: Option<PathBuf>` (set from `DISCLOSURE` if present); add `beacon: String` to `Deployments` (needed for `keyFor` in event mode).
+  - `lib.rs`: keep `pub mod disclosure;`.
   - Add `cwe-zk-circuits` as a dep of `services/settlement` (native).
 
-- [ ] **Step 4: Run to verify it passes.** Run: `cargo test -p cwe-settlement`. Expected: PASS.
+- [ ] **Step 4: Run to verify it passes.** Run: `cargo test -p cwe-settlement`. Expected: PASS (both `settle` and `settle_raw` tests). `chain.rs` event-mode is validated end-to-end by the zk-demo (Task 20); disclosure-mode by the legacy demos (Task 19).
 
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add services/settlement Cargo.toml
-git rm services/settlement/src/disclosure.rs
-git commit -m "settlement: pay from proven weights, verify digest off-chain, delete disclosure file"
+git add services/settlement Cargo.toml libs/zk-circuits
+git commit -m "settlement: dual-mode — keep disclosure path, add proven-weights event path"
 ```
 
 ---
 
 ## Phase 5 — clients, demo, CI, docs
 
-### Task 19: Clients — Poseidon commitments + native player proof bundle
+### Task 19: Configurable verifier + migrate legacy demos/clients to the new signature
+
+> **Scope revised (2026-07-25, Roland's decision):** the four legacy usage-submitting demos (`demo`, `ownership`, `player`, `arbitration`) keep AcceptAllVerifier + their disclosure flow, but the `submitConsumption` selector changed to 7 args for everyone, so their on-chain submit calls and the player client must be updated to the new signature (with dummy ZK fields + empty proof, which AcceptAllVerifier accepts). This restores those four demos to green. Real proof generation is NOT added to the player here — the zk-demo uses a dedicated tool (Task 20).
 
 **Files:**
-- Modify: `clients/player-plugin/*` (settle/session/recognize as needed), `clients/browser-ext/core/*`
+- Modify: `chain/script/Deploy.s.sol`; `ops/demo/run_demo.sh`, `run_ownership_demo.sh`, `run_player_demo.sh`, `run_arbitration_demo.sh`; `clients/player-plugin/src/settle.rs`; `clients/browser-ext/core/*` (submit shim + stale doc)
 
 **Interfaces:**
-- Consumes: `cwe_zk_circuits::prove`, `wallet-zk` Poseidon commitments.
-- Produces: the player builds a `ProofBundle` and calls the extended `submitConsumption`; the browser-ext core compiles with Poseidon commitments (real proving deferred).
+- Produces: `make demo/ownership-demo/player-demo/arbitration-demo` pass again; `Deploy.s.sol` picks the verifier via `VERIFIER` env (default `groth16`).
 
-- [ ] **Step 1: Player — write/adjust the failing test.** In the player's settle path, add a unit test that, given a session's accrued `(work_id, minutes, plays, price, region)` rows, `cwe_zk_circuits::prove::prove(...)` produces a bundle that `verify`s and whose `rows` weights equal `dr::weight_of(...)`. (The on-chain submit is covered by the demo.)
+- [ ] **Step 1: Deploy `VERIFIER` selector.** In `Deploy.s.sol`, read `string verifierKind = vm.envOr("VERIFIER", string("groth16"))`; if it equals `"accept-all"`, `d.verifier = address(new AcceptAllVerifier())` (re-import it), else `new Groth16Verifier()`. Default (unset) stays `groth16`. `forge build` must compile.
 
-- [ ] **Step 2: Run to verify it fails.** Run: `cargo test -p cwe-player`. Expected: FAIL (until the player assembles `UsageRowInput`s and calls `prove`).
+- [ ] **Step 2: Migrate the four legacy demo scripts.** In each of `run_demo.sh`, `run_ownership_demo.sh`, `run_player_demo.sh`, `run_arbitration_demo.sh`: (a) export `VERIFIER=accept-all` before the `forge script Deploy` step; (b) change every `submitConsumption(bytes32,bytes32[],bytes)` `cast send` to the 7-arg form `submitConsumption(bytes32,bytes32[],bytes32[],bytes32[],uint256[],bytes32,bytes)` — pass the existing commitments array for `commitments`, and for `pseudonyms`/`workIds` pass equal-length dummy arrays (reuse the commitments array is fine), `weights` an equal-length `uint256[]` of any values (e.g. `[1,...]`), `digest` `0x00..00`, `proof` `0x`. These are ignored (disclosure mode + AcceptAllVerifier), but arities must match or `submitConsumption` reverts `ArityMismatch`. Keep the disclosure-writing steps unchanged.
 
-- [ ] **Step 3: Implement.**
-  - Player: add `cwe-zk-circuits` dep; load the devnet PK (from `chain/zk/`) at settle time; map accrued session rows → `UsageRowInput`; read `K_epoch` from the beacon (via the player's chain client); `prove`; submit via the extended `submitConsumption` (update the player's `sol!`/alloy binding to the new signature + args). The player's commitments already become Poseidon via `wallet-zk` (Task 16) with no change.
-  - Browser-ext core: it depends on `wallet-zk` (Poseidon now). It must NOT pull in the prover (wasm weight). Confirm it still builds to wasm and its accounting/commit tests pass; leave its `zk::generate_proof` on the labeled placeholder path (the "outsourced prover" profile), and add a code comment pointing at this plan's deferral. If the browser-ext submit call references the old `submitConsumption` signature, update the JS/WASM shim to the new one but keep passing a placeholder proof + a digest computed natively (it will be rejected by the real on-chain verifier — acceptable and documented, since the extension's real proving is the deferred follow-on; the demo uses the player path).
+- [ ] **Step 3: Update the player client + browser-ext submit call to the 7-arg signature.** `clients/player-plugin/src/settle.rs`: update the `sol!` `submitConsumption` binding to the 7-arg signature and the call site to pass `commitments` + equal-length dummy `pseudonyms`/`workIds`/`weights` + zero `digest` + empty `proof` (keeps player_demo green with AcceptAllVerifier; the player still writes its disclosure). Poseidon commitments already come via `wallet-zk` (Task 16). Browser-ext core: if it references the old submit signature, update it likewise; fix the stale "keccak256 commitment" doc comment (the commitment is Poseidon now — its separate `content_hash` keccak use is unrelated and stays). Do NOT add the prover to either client.
 
-- [ ] **Step 4: Run to verify it passes.** Run: `cargo test -p cwe-player` and `cd clients/browser-ext/core && cargo build --target wasm32-unknown-unknown` (or the repo's existing wasm build command). Expected: PASS / builds.
+- [ ] **Step 4: Verify the wasm build.** Run the repo's existing browser-ext wasm build (e.g. `cd clients/browser-ext/core && cargo build --target wasm32-unknown-unknown`, or `wasm-pack build` per its README). If it FAILS because `wallet-zk → cwe-zk-circuits` pulls arkworks into wasm, apply the deferred fix: feature-gate `cwe-zk-circuits`'s `circuit`/`prove`/`setup` modules behind a default `prover` feature and have `wallet-zk` depend on it with `default-features = false` (so wasm gets only `poseidon`/`field`/`dr`), and/or add `getrandom` with the `js` feature to the browser-ext crate. Document exactly what was needed.
 
-- [ ] **Step 5: Commit.**
+- [ ] **Step 5: Run the four legacy demos + player tests.** Run: `for t in demo ownership-demo player-demo arbitration-demo; do make -C ops $t || exit 1; done` and `cargo test -p cwe-player`. Expected: all green.
+
+- [ ] **Step 6: Commit.**
 
 ```bash
-git add clients
-git commit -m "clients: Poseidon commitments; native player generates and submits real proofs"
+git add chain/script/Deploy.s.sol ops/demo clients
+git commit -m "chain/clients/demos: VERIFIER selector; migrate legacy submit calls to the 7-arg signature"
 ```
 
-### Task 20: `make zk-demo` — the three acts
+### Task 20: `make zk-demo` — real proof path, three acts
+
+> **Scope (per the 2026-07-25 decision):** the zk-demo deploys with the default `VERIFIER=groth16`, submits a REAL proof via a dedicated tool, and settles in EVENT mode (no disclosure file). A small submitter bin lives in `services/settlement` (it already has both alloy and, via Task 18, `cwe-zk-circuits`).
 
 **Files:**
-- Create: `ops/zk_demo.sh`
+- Create: `services/settlement/src/bin/zk_submit.rs`, `ops/zk_demo.sh`
 - Modify: `ops/Makefile`
 
 **Interfaces:**
-- Produces: `make -C ops zk-demo` running the three acts on a self-contained Anvil.
+- Produces: `make -C ops zk-demo` running three acts on a self-contained Anvil.
 
-- [ ] **Step 1: Write `ops/zk_demo.sh`** (model it on the existing `player_demo`/`antifraud` demo scripts and `ops/Makefile` conventions — self-contained Anvil, `forge script Deploy`, read `deployments/localhost.json`). The script must:
-  1. Start Anvil, deploy (now includes beacon + Groth16Verifier), set an epoch key on the beacon.
-  2. **Act 1 (honest):** run the player (or a small demo binary) to accrue usage, `prove`, `submitConsumption`; assert the tx succeeds and the event carries weights; run settlement; assert creators are paid and the payout conserves fees. Print "ACT 1 OK".
-  3. **Act 2 (inflation):** re-run with a tampered weight/minutes so the digest no longer matches the proof; assert `submitConsumption` **reverts** (`ProofRejected`). Print "ACT 2 OK (rejected)".
-  4. **Act 3 (row-split):** submit two rows with the same `work_id` to dodge the DR cap; assert the **proof cannot be generated** (uniqueness violated at prove time) OR, if forced, the on-chain verify rejects. Print "ACT 3 OK (rejected)".
-  5. Exit non-zero if any assertion fails. Clean up Anvil (kill only the PID this script started — never pattern-kill).
+- [ ] **Step 1: Write `zk_submit.rs`** — a CLI that: loads the devnet PK (`chain/zk/proving_key.bin`); reads the deployments JSON for `consumption`/`beacon`; reads `K_epoch = beacon.keyFor(currentEpoch)` (set by the demo); builds `UsageRowInput`(s) from args/env (work_id, minutes, plays, price, region); `prove`s; and submits the 7-arg `submitConsumption(commitments, pseudonyms, workIds, weights, digest, proof)` where `commitments` are the bundle's per-row commitments, `pseudonyms`/`workIds`/`weights` come from `bundle.rows`, `digest` = `bundle.digest`, `proof` = `bundle.proof`. Flags: `--mode honest|tamper-digest|row-split`. `tamper-digest` flips a byte of the submitted `digest` before sending (on-chain verify must then revert). `row-split` builds two `UsageRowInput`s with the SAME `work_id` and expects `prove` to return `Err` (uniqueness) — print the error and exit non-zero WITHOUT submitting.
 
-- [ ] **Step 2: Add the Makefile target.**
+- [ ] **Step 2: Write `ops/zk_demo.sh`** (model on existing demo scripts; self-contained Anvil; kill only the exact Anvil PID you started — never pattern-kill). Steps:
+  1. Start Anvil; `VERIFIER=groth16 forge script Deploy` (default, but set explicitly); read `deployments/localhost.json`.
+  2. As owner, `cast send beacon setKey(uint256,bytes32)` for the current epoch (a fixed non-zero key).
+  3. Register a work + tier + fund a subscription so there's a fee to distribute (reuse the pattern from `run_demo.sh`).
+  4. **Act 1 (honest):** `cargo run -p cwe-settlement --release --bin zk_submit -- --mode honest`; assert the tx succeeds and `ConsumptionSubmitted` carries the weights; run settlement in EVENT mode (no `DISCLOSURE` env, pass `RPC_URL`/`PRIVATE_KEY`/`EPOCH`/deployments incl. `beacon`); assert a creator is paid and fees conserve. Print `ACT 1 OK`.
+  5. **Act 2 (inflation):** `zk_submit --mode tamper-digest`; assert the submit **reverts** (`ProofRejected`). Print `ACT 2 OK (rejected)`.
+  6. **Act 3 (row-split):** `zk_submit --mode row-split`; assert the tool exits non-zero because `prove` refused (uniqueness). Print `ACT 3 OK (rejected)`.
+  7. Exit non-zero on any failed assertion.
+
+- [ ] **Step 3: Add the Makefile target.**
 
 ```makefile
 zk-demo: ## Run the ZK usage-proof end-to-end demo (self-contained Anvil)
@@ -1105,13 +1116,13 @@ zk-demo: ## Run the ZK usage-proof end-to-end demo (self-contained Anvil)
 
 Add `zk-demo` to the `.PHONY` line and the `help` list.
 
-- [ ] **Step 3: Run it.** Run: `make -C ops zk-demo`. Expected: all three acts print OK; exit 0.
+- [ ] **Step 4: Run it.** Run: `make -C ops zk-demo`. Expected: all three acts print OK; exit 0. (First run builds the release prover; proving is ~5s.)
 
-- [ ] **Step 4: Commit.**
+- [ ] **Step 5: Commit.**
 
 ```bash
-git add ops/Makefile ops/zk_demo.sh
-git commit -m "ops: make zk-demo proves honest pays, inflation and row-split are rejected"
+git add services/settlement/src/bin/zk_submit.rs ops/Makefile ops/zk_demo.sh
+git commit -m "ops: make zk-demo — real proof honest-pays, inflation and row-split rejected"
 ```
 
 ### Task 21: CI `zk-e2e` job
@@ -1147,9 +1158,9 @@ for t in demo hub-demo ownership-demo player-demo arbitration-demo antifraud-dem
 
 Expected: all green. Fix anything red before proceeding (do not edit the roadmap until green).
 
-- [ ] **Step 2: Update `docs/roadmap.md`** — flip H2 to done-for-cycle-1 with the deferred sub-items listed (work-blinding, manifest-signature, tier-eligibility, cross-epoch unlinkability, real beacon); update the "What is real vs stubbed" *Usage proofs* row to "real Groth16 integrity proof + within-epoch dedup; disclosure file removed"; bump the status date. Mirror the high-level line in `ROADMAP.md`.
+- [ ] **Step 2: Update `docs/roadmap.md`** — flip H2 to done-for-cycle-1 with the deferred sub-items listed (work-blinding, manifest-signature, tier-eligibility, cross-epoch unlinkability, real beacon, **migrating the four legacy demos + player off the disclosure path onto real proofs**); update the "What is real vs stubbed" *Usage proofs* row to "real Groth16 integrity proof + within-epoch dedup, verified on-chain (`Groth16Verifier`); settlement pays from proven event weights (event mode). Disclosure file retained as the legacy path for the pre-ZK demos (dual-mode)"; bump the status date. Mirror the high-level line in `ROADMAP.md`.
 
-- [ ] **Step 3: Update `project-map.js`** — set the H2 node `status`/`desc`/`parts` (new `CWEEpochBeacon`, `Groth16Verifier`, `zk-circuits`), add/adjust the `roadmap[]` entry, and set `project.updated` to `2026-07-24`. Keep it factual. Open `file:///home/roland/git/clean-web-economy/project-map.html` to confirm it renders and the stats recompute.
+- [ ] **Step 3: Update `project-map.js`** — set the H2 node `status`/`desc`/`parts` (new `CWEEpochBeacon`, `Groth16Verifier`, `zk-circuits`, dual-mode settlement), add/adjust the `roadmap[]` entry, and set `project.updated` to today's date. Keep it factual. Open `file:///home/roland/git/clean-web-economy/project-map.html` to confirm it renders and the stats recompute.
 
 - [ ] **Step 4: Commit.**
 
