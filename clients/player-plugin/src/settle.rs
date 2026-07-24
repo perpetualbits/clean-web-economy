@@ -8,6 +8,12 @@
 //! disclosure shape is identical to `services/settlement/src/disclosure.rs`, and
 //! reuses the same `Opening` type, so the two cannot drift.
 
+// The `sol!`-generated `submitConsumption` binding's arity mirrors the
+// contract's seven-arg signature (inherent to the ABI, not a design smell), so
+// the arity lint is silenced for this module — same rationale as
+// `services/settlement/src/bin/zk_submit.rs`.
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
