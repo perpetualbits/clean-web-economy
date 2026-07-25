@@ -64,7 +64,8 @@ compute a **real per-(user, work) bandwidth-credibility** that feeds DAPR — so
   still holds), and a credentialed node must still genuinely serve and co-sign that
   byte — it is not free to manufacture. Closing it needs either an absolute floor on
   expected bytes per claim, or weight-magnitude sensitivity in the payout target
-  itself; both are spec-level decisions deferred to a later cycle.
+  itself; both are spec-level decisions. **Deferred to H5 cycle 2** (agreed
+  2026-07-25), where closing this is a scoping driver rather than a nice-to-have.
 - **Unmetered fragment requests / receipts attest reads, not delivery** *(found in
   review, deliberately deferred — not a gap the team missed)*: the ledger
   `services/storage/src/main.rs` signs from records bytes **read off disk and handed
@@ -87,7 +88,9 @@ compute a **real per-(user, work) bandwidth-credibility** that feeds DAPR — so
   genuinely hosted on a credentialed node. Closing it needs binding `offset`/`len`
   into the receipt and deduping by byte RANGE per (user, work) rather than by chunk
   nonce, plus writing the ledger entry only after the response body has actually
-  been written — a spec-level change deferred to a later cycle, not attempted here.
+  been written — a spec-level change, not attempted here. **Deferred to H5 cycle 2**
+  (agreed 2026-07-25), where it is the highest-priority item of the two gaps, being
+  the cheaper attack.
 - **Whole-file reads in `fragment`** (`services/storage/src/lib.rs`): regardless of
   the requested `offset`/`len` window, `fragment` loads the ENTIRE content file into
   memory via `std::fs::read` before slicing out the requested window, so concurrent

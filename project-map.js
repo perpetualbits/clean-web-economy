@@ -392,6 +392,7 @@ window.PROJECT_MAP = {
     { id: "h6", kind: "harden", label: "H6 — Verifiable credentials / identity", status: "done" },
     { id: "h2", kind: "harden", label: "H2 — ZK usage proofs (cycle 1)", status: "done" },
     { id: "h5", kind: "harden", label: "H5 — Storage + real bandwidth receipts (cycle 1)", status: "done" },
+    { id: "h5c2", kind: "harden", label: "H5 cycle 2 — close the dust-weight and fetch-and-discard credibility gaps; ZK bandwidth proof, peer diversity, P2P swarm", status: "planned" },
     { id: "h4", kind: "harden", label: "H4 — Decentralised settlement", status: "planned" },
     { id: "hx", kind: "harden", label: "H7–H10 — tiers · epoch beacon · discovery v2 · security", status: "planned" },
   ],

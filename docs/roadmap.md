@@ -265,12 +265,20 @@ and the remaining trust-minimisation items:
    cross-epoch unlinkability, a real randomness beacon (VRF/drand) for
    `CWEEpochBeacon`, and migrating the four legacy demos plus the player off the
    disclosure path onto real proofs.
-3. **H4 — Decentralised settlement.** Rollup/multi-aggregator model, now that event
+3. **H5 — cycle 2 (deferred from cycle 1).** Scoped and prioritised by the two
+   deterrent gaps cycle 1 documented rather than closed — both agreed for this cycle:
+   an **absolute floor on expected bytes** per claim (or weight-magnitude sensitivity
+   in the payout target), so a dust-weight claim cannot reach full credibility off a
+   single byte; and **binding `offset`/`len` into the receipt** with per-range dedup,
+   plus writing the node's ledger entry only after the response body is flushed, so
+   receipts attest bytes *delivered* rather than bytes *read* and cannot be minted by
+   fetch-and-discard. Alongside those: the ZK bandwidth proof (hide which works/peers
+   and per-work bytes), a peer-diversity proof, the full P2P storage swarm, node
+   compliance & staking/slashing, ephemeral-key unlinkability, and graduating
+   `RATE(W)` from deploy config to a manifest/registry field with a protocol floor.
+4. **H4 — Decentralised settlement.** Rollup/multi-aggregator model, now that event
    mode gives the aggregator a proof-backed usage signal to build on.
-4. **Follow-ons:** the reputation→hub-ranking wiring (H3 fast-follow); the player
-   agent's VLC/FFmpeg C module + video fingerprinting; the trustless staked jury; H5
-   cycle 2 (ZK bandwidth proof, peer-diversity proof, full P2P swarm, node
-   compliance/staking, ephemeral-key unlinkability, and closing the dust-weight
-   credibility gap noted in the H5 write-up above).
+5. **Follow-ons:** the reputation→hub-ranking wiring (H3 fast-follow); the player
+   agent's VLC/FFmpeg C module + video fingerprinting; the trustless staked jury.
 
 Each becomes its own spec → plan → build cycle. This document is updated as items land.

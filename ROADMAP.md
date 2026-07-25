@@ -65,9 +65,11 @@ Runs alongside the feature phases.
 
 Still to come: H2 cycle 2 (work-identity blinding, manifest-signature and
 tier-eligibility circuits, cross-epoch unlinkability, a real randomness beacon,
-migrating the legacy demos onto real proofs), H5 cycle 2 (ZK bandwidth proof,
-peer-diversity proof, full P2P storage swarm, node compliance/staking, ephemeral-key
-unlinkability), decentralised settlement, tier capability tokens, an epoch beacon
+migrating the legacy demos onto real proofs), H5 cycle 2 (closing both known gaps
+above — an absolute floor on expected bytes, and range-bound receipts recorded only
+after delivery — plus the ZK bandwidth proof, peer-diversity proof, full P2P storage
+swarm, node compliance/staking, ephemeral-key unlinkability), decentralised
+settlement, tier capability tokens, an epoch beacon
 upgrade, discovery v2, and security/legal hardening. Details and spec mapping in
 [`docs/roadmap.md`](docs/roadmap.md).
 
