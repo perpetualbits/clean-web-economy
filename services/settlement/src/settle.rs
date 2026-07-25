@@ -10,7 +10,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
-use cwe_dapr::{allocate, allocate_from_raw, DaprError, DaprParams, Dataset, Payouts, RawRow};
+use cwe_dapr::{
+    allocate, allocate_from_raw, allocate_from_raw_with_row_credibility, DaprError, DaprParams,
+    Dataset, Payouts, RawRow,
+};
 use cwe_wallet_zk::Bytes32;
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +126,24 @@ pub fn settle_raw(
     // Same apportionment math as `settle`, fed proven raw weights instead of
     // raw usage fields; the routing/Merkle/escrow tail is shared below.
     let payouts = allocate_from_raw(tier_fees, rows, bandwidth_ppm)?;
+    finalize(epoch, payouts, escrow_works)
+}
+
+/// As [`settle_raw`], but driven by a PER-ROW bandwidth-credibility signal
+/// instead of a per-work map.
+///
+/// This is the path a real bandwidth layer takes: verified receipts yield one
+/// credibility per (user, work) row, which distinguishes an honest user from a
+/// padder claiming the same work — something a per-work value cannot do. The
+/// routing/Merkle/escrow tail is shared with [`settle_raw`].
+pub fn settle_raw_with_row_credibility(
+    epoch: u64,
+    tier_fees: &BTreeMap<String, u128>,
+    rows: &[RawRow],
+    credibility_ppm: &[u64],
+    escrow_works: &BTreeSet<String>,
+) -> Result<Settlement, SettleError> {
+    let payouts = allocate_from_raw_with_row_credibility(tier_fees, rows, credibility_ppm)?;
     finalize(epoch, payouts, escrow_works)
 }
 

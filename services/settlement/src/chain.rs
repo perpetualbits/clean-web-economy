@@ -29,7 +29,7 @@ use std::error::Error;
 use std::str::FromStr;
 
 use alloy::network::TransactionBuilder;
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{keccak256, Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::{Filter, TransactionRequest};
 use alloy::signers::local::PrivateKeySigner;
@@ -37,12 +37,14 @@ use alloy::sol;
 use alloy::sol_types::SolEvent;
 
 use cwe_dapr::{Dataset, RawRow, UsageRow};
+use cwe_receipt::{normalize_addr, ReceiptBundle};
 use cwe_wallet_zk::Bytes32;
 use cwe_zk_circuits::prove::{digest_from_active, PublicRow};
 
 use crate::config::Config;
 use crate::disclosure::Disclosure;
-use crate::settle::{settle, settle_raw, Settlement};
+use crate::receipts::{accept_receipts, row_credibility_ppm};
+use crate::settle::{settle, settle_raw, settle_raw_with_row_credibility, Settlement};
 
 // Minimal on-chain interfaces the settlement job touches. `#[sol(rpc)]` generates
 // typed contract bindings (constructors, call builders, event decoders).
@@ -79,10 +81,31 @@ sol! {
     contract Escrow {
         function commit(uint256 epochId, bytes32 workId, uint256 amount) external;
     }
+    /// Minimal `CWEIdentity` view used to check storage-node credentials.
+    #[sol(rpc)]
+    interface Identity {
+        function isValid(address subject, bytes32 credType) external view returns (bool);
+    }
 }
 
 /// A boxed error alias keeping the orchestration signature readable.
 type BoxErr = Box<dyn Error + Send + Sync>;
+
+/// Recompute the `STORAGE_NODE` credential type identically to the on-chain
+/// `CredentialTypes.STORAGE_NODE` Solidity constant (`chain/contracts/CredentialTypes.sol`).
+///
+/// Both sides derive this the same way — `keccak256("cwe.credential.storage-node")`
+/// — but they are two independent implementations in two different languages,
+/// with nothing at compile time forcing them to agree. If this value ever
+/// silently drifted from the Solidity constant, `Identity::isValid` would check
+/// a credential type that no attestation on-chain ever holds, EVERY bandwidth
+/// receipt would stop counting, and settlement would keep running with no error
+/// — it would just quietly stop discounting fraud. `cred_type_matches_solidity_constant`
+/// below pins this value against the constant as independently verified with
+/// `cast keccak "cwe.credential.storage-node"`, so that drift cannot go unnoticed.
+fn storage_node_credential_type() -> B256 {
+    keccak256(b"cwe.credential.storage-node")
+}
 
 /// Run a full settlement against the configured chain and write the proofs file.
 ///
@@ -297,6 +320,13 @@ async fn run_disclosure<P: Provider>(
 /// Registry-derived escrow-tier routing in event mode (mapping fingerprint-tier
 /// works to escrow from on-chain state rather than a disclosure file) is a
 /// documented follow-on.
+///
+/// **Bandwidth:** if [`Config::receipts_path`] names a receipt bundle, it is
+/// verified (signatures, epoch binding, storage-node credential, anti-replay)
+/// and turned into a per-row bandwidth credibility via
+/// [`crate::settle::settle_raw_with_row_credibility`]. Without a bundle,
+/// bandwidth stays neutral and this is byte-for-byte the pre-H5 behaviour —
+/// the four legacy demos and the player never set `RECEIPTS`.
 async fn run_events<P: Provider>(cfg: &Config, provider: &P) -> Result<Settlement, BoxErr> {
     // Resolve the contracts this mode reads: tier fees and the epoch beacon.
     let tiers_addr = Address::from_str(&cfg.deployments.tiers)?;
@@ -365,13 +395,79 @@ async fn run_events<P: Provider>(cfg: &Config, provider: &P) -> Result<Settlemen
         }
     }
 
-    // Pay from the proven weights. Bandwidth is neutral (empty map) and escrow is
-    // empty for cycle-1 — every proven work pays directly (see the fn doc).
-    Ok(settle_raw(
-        cfg.epoch,
-        &tier_fees,
-        &rows,
-        &BTreeMap::new(),
-        &BTreeSet::new(),
-    )?)
+    // Bandwidth credibility: with a receipt bundle present, verify it and turn
+    // the verified bytes into a per-row discount; without one, stay neutral and
+    // pay exactly as before H5.
+    let credibility = match &cfg.receipts_path {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)?;
+            let bundle = ReceiptBundle::from_json(&raw)?;
+
+            // Resolve each distinct node's storage-node credential ONCE, then
+            // hand `accept_receipts` a synchronous predicate over the results —
+            // it keeps the accept/reject policy free of async and of the chain.
+            let identity_addr = Address::from_str(&cfg.deployments.identity)?;
+            let identity = Identity::new(identity_addr, provider);
+            let cred_type = storage_node_credential_type();
+            let mut valid: BTreeMap<String, bool> = BTreeMap::new();
+            for signed in &bundle.receipts {
+                let node = normalize_addr(&signed.receipt.node);
+                if valid.contains_key(&node) {
+                    continue;
+                }
+                // A node address that will not even parse cannot be credentialed.
+                let ok = match Address::from_str(&node) {
+                    Ok(addr) => identity.isValid(addr, cred_type).call().await?,
+                    Err(_) => false,
+                };
+                valid.insert(node, ok);
+            }
+
+            let verified = accept_receipts(&bundle, cfg.epoch, &|node: &str| {
+                valid.get(node).copied().unwrap_or(false)
+            });
+            let ppm = row_credibility_ppm(&rows, &verified, &cfg.rates);
+            eprintln!(
+                "bandwidth: {} receipts submitted, {} (user, work) pairs credited",
+                bundle.receipts.len(),
+                verified.len()
+            );
+            Some(ppm)
+        }
+        None => None,
+    };
+
+    // Pay from the proven weights. Escrow is empty for cycle-1 — every proven
+    // work pays directly (see the fn doc).
+    Ok(match credibility {
+        Some(ppm) => {
+            settle_raw_with_row_credibility(cfg.epoch, &tier_fees, &rows, &ppm, &BTreeSet::new())?
+        }
+        None => settle_raw(
+            cfg.epoch,
+            &tier_fees,
+            &rows,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        )?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin the Rust recomputation of the `STORAGE_NODE` credential type against
+    /// the Solidity constant it must match bit-for-bit
+    /// (`chain/contracts/CredentialTypes.sol: STORAGE_NODE`), independently
+    /// verified with `cast keccak "cwe.credential.storage-node"`. A silent
+    /// drift here would mean every bandwidth receipt stops counting with no
+    /// error anywhere — this test is what makes that impossible to miss.
+    #[test]
+    fn cred_type_matches_solidity_constant() {
+        let expected: B256 = "0x48b4d2e65fa9d22ac7b0381616bf8c7a839a216a3d4b829879ac674150aa8e86"
+            .parse()
+            .unwrap();
+        assert_eq!(storage_node_credential_type(), expected);
+    }
 }

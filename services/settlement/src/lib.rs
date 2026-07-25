@@ -16,4 +16,5 @@ pub mod chain;
 pub mod config;
 pub mod disclosure;
 pub mod merkle;
+pub mod receipts;
 pub mod settle;

@@ -1,6 +1,7 @@
 //! Settlement job configuration, assembled from environment variables and the
 //! deployment address map written by the deploy script.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -21,6 +22,9 @@ pub struct Deployments {
     pub escrow: String,
     /// The `CWEEpochBeacon` address (for reading `keyFor(epoch)` in event mode).
     pub beacon: String,
+    /// The `CWEIdentity` address (for checking storage-node credentials when
+    /// verifying bandwidth receipts).
+    pub identity: String,
 }
 
 /// Everything the settlement run needs.
@@ -41,6 +45,18 @@ pub struct Config {
     pub out_path: PathBuf,
     /// The deployed contract addresses.
     pub deployments: Deployments,
+    /// Path to a receipt bundle to verify (from `RECEIPTS`). `None` means no
+    /// bandwidth signal was supplied, so credibility stays neutral and payouts
+    /// are exactly what they were before H5 — which is what keeps every legacy
+    /// demo working unchanged.
+    pub receipts_path: Option<PathBuf>,
+    /// Per-work bandwidth rates in bytes per `RATE_SCALE` units of proven weight
+    /// (from `RATES`), keyed by lowercase `0x` work id. Empty when unset.
+    ///
+    /// This map is aggregator-side ON PURPOSE: whoever sets a rate can switch
+    /// that work's bandwidth discount off, so it must not come from the payout
+    /// beneficiary or from the (consumer-written) receipt bundle.
+    pub rates: BTreeMap<String, u64>,
 }
 
 impl Config {
@@ -51,7 +67,10 @@ impl Config {
     /// (OPTIONAL — its presence selects legacy disclosure mode; its absence
     /// selects proven-weights event mode), `DEPLOYMENTS` (default
     /// `chain/deployments/localhost.json`), `OUT` (default
-    /// `chain/out/epoch-<n>-proofs.json`).
+    /// `chain/out/epoch-<n>-proofs.json`), `RECEIPTS` (OPTIONAL — a bandwidth
+    /// receipt bundle to verify; its absence keeps bandwidth neutral), `RATES`
+    /// (OPTIONAL — a JSON file of per-work bandwidth rates; unset works are
+    /// treated as having no rate, which fails closed under `RECEIPTS`).
     pub fn from_env() -> Result<Config, ConfigError> {
         // Default RPC points at a local Anvil node.
         let rpc_url =
@@ -79,6 +98,25 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(format!("chain/out/epoch-{epoch}-proofs.json")));
 
+        // A receipt bundle is optional; without one, bandwidth stays neutral.
+        let receipts_path = std::env::var("RECEIPTS").ok().map(PathBuf::from);
+
+        // The per-work rate map, if supplied. Keys are lowercased so lookups
+        // match the row keys settlement builds from chain data.
+        let rates: BTreeMap<String, u64> = match std::env::var("RATES") {
+            Ok(path) => {
+                let raw = std::fs::read_to_string(&path)
+                    .map_err(|e| ConfigError::Rates(path.clone(), e.to_string()))?;
+                let parsed: BTreeMap<String, u64> = serde_json::from_str(&raw)
+                    .map_err(|e| ConfigError::Rates(path, e.to_string()))?;
+                parsed
+                    .into_iter()
+                    .map(|(k, v)| (k.to_ascii_lowercase(), v))
+                    .collect()
+            }
+            Err(_) => BTreeMap::new(),
+        };
+
         Ok(Config {
             rpc_url,
             private_key,
@@ -86,6 +124,8 @@ impl Config {
             disclosure_path,
             out_path,
             deployments,
+            receipts_path,
+            rates,
         })
     }
 }
@@ -107,4 +147,7 @@ pub enum ConfigError {
     /// The deployments file could not be read or parsed.
     #[error("loading deployments file {0}: {1}")]
     Deployments(String, String),
+    /// The rates file could not be read or parsed.
+    #[error("loading rates file {0}: {1}")]
+    Rates(String, String),
 }

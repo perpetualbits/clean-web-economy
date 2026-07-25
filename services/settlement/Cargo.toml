@@ -21,6 +21,8 @@ cwe-wallet-zk = { path = "../../libs/wallet-zk" }
 # ZK usage-proof primitives: the public-digest recomputation (`digest_from_active`)
 # the event-mode settlement path uses to re-verify each proven submission.
 cwe-zk-circuits = { path = "../../libs/zk-circuits" }
+# Co-signed bandwidth receipts: the portable type this module verifies.
+cwe-receipt = { path = "../../libs/receipt" }
 
 # Ethereum stack: provider/RPC, contract bindings (sol! macro), and a local signer.
 alloy = { version = "2", features = ["full"] }
