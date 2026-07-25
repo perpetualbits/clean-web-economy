@@ -218,6 +218,9 @@ pub enum DaprError {
     /// An intermediate product exceeded `u128`. See [`UsageRow::value`].
     #[error("arithmetic overflow while computing usage value")]
     Overflow,
+    /// The per-row credibility slice's length did not match the row slice's.
+    #[error("per-row credibility length does not match the number of rows")]
+    RowCredibilityLen,
 }
 
 /// Compute per-work payouts (and the reputation signal) from a dataset.
@@ -298,18 +301,71 @@ pub struct RawRow {
 /// before. Row order within a user must match the caller's intended
 /// apportionment tie-breaks (see [`allocate`], which preserves `dataset.usage`
 /// order) since largest-remainder ties are broken by position.
+///
+/// This is now a thin wrapper over
+/// [`allocate_from_raw_with_row_credibility`]: it expands the per-work map into
+/// one credibility per row. Callers with a real per-(user, work) bandwidth
+/// signal — settlement, once receipts are verified — should call the per-row
+/// form directly, since a per-work value cannot distinguish an honest user from
+/// a padder on the same work.
 pub fn allocate_from_raw(
     tier_fees: &BTreeMap<UserId, u128>,
     rows: &[RawRow],
     bandwidth_ppm: &BTreeMap<WorkId, u64>,
 ) -> Result<Payouts, DaprError> {
-    // Group rows by user, preserving each row's relative order within its user
-    // (the order they appear in `rows`) so largest-remainder tie-breaks are
-    // reproducible. `BTreeMap` keeps user iteration order stable, matching
-    // `allocate`'s grouping of `dataset.usage`.
-    let mut rows_by_user: BTreeMap<&UserId, Vec<&RawRow>> = BTreeMap::new();
-    for row in rows {
-        rows_by_user.entry(&row.user).or_default().push(row);
+    // Expand the per-work signal to one value per row; `bw_ppm` supplies the
+    // neutral default and the upper clamp.
+    let per_row: Vec<u64> = rows
+        .iter()
+        .map(|r| bw_ppm(bandwidth_ppm, &r.work))
+        .collect();
+    allocate_from_raw_with_row_credibility(tier_fees, rows, &per_row)
+}
+
+/// Compute per-work payouts (and the reputation signal) from pre-computed
+/// per-row `raw` weights and a PER-ROW bandwidth-credibility signal.
+///
+/// This is the payout core. `credibility_ppm[i]` is row `i`'s bandwidth
+/// credibility in ppm — `1_000_000` is neutral (full credit), `0` means the
+/// bandwidth layer saw no evidence that this user actually received this work's
+/// content. Values above neutral are clamped down to neutral, so bandwidth can
+/// only ever discount a payout; that keeps `cred ≤ raw` and with it fee
+/// conservation, even on malformed input.
+///
+/// For each row `cred_i = raw_i · credibility_ppm[i] / 1e6`. Per user,
+/// `rw_u = Σ raw` (the **bandwidth-free** denominator) and `sum_cred = Σ cred`
+/// drive `target = fee · sum_cred / rw_u`, the largest-remainder [`apportion`],
+/// and the `unallocated` accounting. Because the denominator excludes the
+/// discount, the shortfall `fee - target` is **burned into `unallocated`, not
+/// redistributed** — that is the anti-fraud strict-loss property: claiming usage
+/// whose bytes never moved destroys the claimant's own money instead of moving
+/// it somewhere else.
+///
+/// Row order within a user must match the caller's intended apportionment
+/// tie-breaks, since largest-remainder ties are broken by position.
+///
+/// Returns [`DaprError::RowCredibilityLen`] if `credibility_ppm.len() != rows.len()`.
+pub fn allocate_from_raw_with_row_credibility(
+    tier_fees: &BTreeMap<UserId, u128>,
+    rows: &[RawRow],
+    credibility_ppm: &[u64],
+) -> Result<Payouts, DaprError> {
+    // The two slices are positionally paired, so a length mismatch is a caller
+    // bug that would silently mis-attribute credibility. Refuse it.
+    if credibility_ppm.len() != rows.len() {
+        return Err(DaprError::RowCredibilityLen);
+    }
+
+    // Group rows by user, carrying each row's credibility with it and preserving
+    // each row's relative order within its user so largest-remainder tie-breaks
+    // are reproducible. `BTreeMap` keeps user iteration order stable.
+    let mut rows_by_user: BTreeMap<&UserId, Vec<(&RawRow, u64)>> = BTreeMap::new();
+    for (row, &cred_ppm) in rows.iter().zip(credibility_ppm) {
+        // Clamp on the way in: an above-neutral value degrades to neutral.
+        rows_by_user
+            .entry(&row.user)
+            .or_default()
+            .push((row, cred_ppm.min(1_000_000)));
     }
 
     let mut per_work: BTreeMap<WorkId, u128> = BTreeMap::new();
@@ -330,8 +386,8 @@ pub fn allocate_from_raw(
         let mut creds = Vec::with_capacity(user_rows.len());
         let mut rw_u: u128 = 0;
         let mut sum_cred: u128 = 0;
-        for row in &user_rows {
-            let cred = mul_div(row.raw, bw_ppm(bandwidth_ppm, &row.work) as u128, 1_000_000)?;
+        for (row, cred_ppm) in &user_rows {
+            let cred = mul_div(row.raw, *cred_ppm as u128, 1_000_000)?;
             rw_u = rw_u.checked_add(row.raw).ok_or(DaprError::Overflow)?;
             sum_cred = sum_cred.checked_add(cred).ok_or(DaprError::Overflow)?;
             creds.push(cred);
@@ -362,7 +418,7 @@ pub fn allocate_from_raw(
         // Split `target` across rows by cred, exactly (largest remainder), and
         // fold the results into the per-work totals.
         let shares = apportion(target, &creds, sum_cred)?;
-        for (row, share) in user_rows.iter().zip(shares) {
+        for ((row, _), share) in user_rows.iter().zip(shares) {
             let entry = per_work.entry(row.work.clone()).or_insert(0);
             *entry = entry.checked_add(share).ok_or(DaprError::Overflow)?;
         }
@@ -775,5 +831,111 @@ mod tests {
         assert_eq!(full, 600_000);
         assert_eq!(half, 300_000);
         assert_eq!(full + half, 900_000);
+    }
+
+    /// Three rows across two users, used by the per-row credibility tests.
+    fn cred_rows() -> (BTreeMap<UserId, u128>, Vec<RawRow>) {
+        let mut fees: BTreeMap<UserId, u128> = BTreeMap::new();
+        fees.insert("u1".to_string(), 1_000_000);
+        fees.insert("u2".to_string(), 1_000_000);
+        let rows = vec![
+            RawRow {
+                user: "u1".into(),
+                work: "wA".into(),
+                raw: 300,
+            },
+            RawRow {
+                user: "u1".into(),
+                work: "wB".into(),
+                raw: 100,
+            },
+            RawRow {
+                user: "u2".into(),
+                work: "wA".into(),
+                raw: 400,
+            },
+        ];
+        (fees, rows)
+    }
+
+    /// All-neutral per-row credibility reproduces `allocate_from_raw` with an
+    /// empty (neutral) bandwidth map, bit for bit. This is the compatibility
+    /// guarantee every existing caller and demo relies on.
+    #[test]
+    fn neutral_row_credibility_matches_allocate_from_raw() {
+        let (fees, rows) = cred_rows();
+        let baseline = allocate_from_raw(&fees, &rows, &BTreeMap::new()).unwrap();
+        let neutral = vec![1_000_000u64; rows.len()];
+        let got = allocate_from_raw_with_row_credibility(&fees, &rows, &neutral).unwrap();
+        assert_eq!(got, baseline);
+    }
+
+    /// A zero-credibility row is a STRICT LOSS: its share is burned into
+    /// `unallocated`, not handed to the user's other rows. u1's wA row is
+    /// discredited, so u1 pays only the 100/400 its wB row still earns.
+    #[test]
+    fn zero_credibility_row_burns_its_share() {
+        let (fees, rows) = cred_rows();
+        let creds = vec![0, 1_000_000, 1_000_000];
+        let got = allocate_from_raw_with_row_credibility(&fees, &rows, &creds).unwrap();
+
+        // u1: rw = 400, sum_cred = 100 → target = 1_000_000 · 100/400 = 250_000,
+        // all of it to wB; the other 750_000 is burned.
+        // u2: fully credible → its whole 1_000_000 fee goes to wA.
+        assert_eq!(got.per_work.get("wB").copied(), Some(250_000));
+        assert_eq!(got.per_work.get("wA").copied(), Some(1_000_000));
+        assert_eq!(got.unallocated, 750_000);
+
+        // Conservation: everything paid plus everything burned equals the fees in.
+        let paid: u128 = got.per_work.values().sum();
+        assert_eq!(paid + got.unallocated, 2_000_000);
+    }
+
+    /// Per-row credibility is per-(user, work): discrediting u1's wA row does
+    /// not touch u2's row on the SAME work. This is the property that makes
+    /// per-user padding punishable without collateral damage.
+    #[test]
+    fn row_credibility_does_not_leak_across_users() {
+        let (fees, rows) = cred_rows();
+        let creds = vec![0, 1_000_000, 1_000_000];
+        let got = allocate_from_raw_with_row_credibility(&fees, &rows, &creds).unwrap();
+        // u2's contribution to wA is untouched by u1's discredited row.
+        assert_eq!(got.per_work.get("wA").copied(), Some(1_000_000));
+    }
+
+    /// A fractional credibility discounts proportionally: at 50% on u1's wA row,
+    /// u1's target is (150+100)/400 of its fee.
+    #[test]
+    fn fractional_credibility_discounts_proportionally() {
+        let (fees, rows) = cred_rows();
+        let creds = vec![500_000, 1_000_000, 1_000_000];
+        let got = allocate_from_raw_with_row_credibility(&fees, &rows, &creds).unwrap();
+        // u1: cred = 150 + 100 = 250, rw = 400 → target = 625_000, burned 375_000.
+        assert_eq!(got.unallocated, 375_000);
+        let paid: u128 = got.per_work.values().sum();
+        assert_eq!(paid + got.unallocated, 2_000_000);
+    }
+
+    /// An above-neutral credibility degrades to neutral rather than paying out
+    /// more than the fee (conservation must hold on bogus input).
+    #[test]
+    fn above_neutral_row_credibility_degrades_to_neutral() {
+        let (fees, rows) = cred_rows();
+        let baseline = allocate_from_raw(&fees, &rows, &BTreeMap::new()).unwrap();
+        let bogus = vec![5_000_000u64; rows.len()];
+        let got = allocate_from_raw_with_row_credibility(&fees, &rows, &bogus).unwrap();
+        assert_eq!(got, baseline);
+    }
+
+    /// A credibility slice whose length does not match `rows` is a caller bug
+    /// and must be refused, not silently padded.
+    #[test]
+    fn mismatched_credibility_length_is_an_error() {
+        let (fees, rows) = cred_rows();
+        let short = vec![1_000_000u64; rows.len() - 1];
+        assert!(matches!(
+            allocate_from_raw_with_row_credibility(&fees, &rows, &short),
+            Err(DaprError::RowCredibilityLen)
+        ));
     }
 }
