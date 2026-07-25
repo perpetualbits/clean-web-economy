@@ -487,6 +487,7 @@ mod tests {
             Ok(Some(OnChainWork {
                 registrant: self.0,
                 price_per_min: 1_000_000,
+                bandwidth_rate: 960_000,
                 region: Bytes32([0; 32]),
             }))
         }
@@ -509,6 +510,7 @@ mod tests {
             tags: vec![],
             work_type: WorkType::Audio,
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([0; 32]),
             creator_id: signer.address(),
             created_at: 1,
@@ -580,6 +582,7 @@ mod tests {
             tags: vec![],
             work_type: WorkType::Audio,
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([0; 32]),
             creator_id: signer.address(),
             created_at: u64::MAX, // absurd future timestamp
@@ -702,6 +705,7 @@ mod tests {
             tags: vec![],
             work_type: WorkType::Audio,
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([0; 32]),
             creator_id: registrant.address(),
             created_at: 1,
@@ -779,6 +783,7 @@ mod tests {
             tags: vec![],
             work_type: WorkType::Audio,
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([0; 32]),
             creator_id: creator,
             created_at: 1,

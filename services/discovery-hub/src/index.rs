@@ -327,6 +327,7 @@ mod tests {
             tags: vec!["music".to_string()],
             work_type: wt,
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([0; 32]),
             creator_id: Address::ZERO,
             created_at: created,

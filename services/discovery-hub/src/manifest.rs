@@ -43,6 +43,10 @@ pub struct WorkManifest {
     pub work_type: WorkType,
     /// Price per minute in ppm; MUST equal the on-chain value.
     pub price_per_min: u64,
+    /// Bytes expected per 1e12 units of proven DAPR weight; MUST equal the
+    /// on-chain value. The settlement aggregator uses it to decide how much
+    /// bandwidth evidence a usage claim on this work must carry.
+    pub bandwidth_rate: u64,
     /// The on-chain regionRule tag; MUST equal the on-chain value.
     #[schema(value_type = String)]
     pub region: Bytes32,
@@ -131,6 +135,7 @@ mod tests {
             tags: vec!["demo".to_string(), "audio".to_string()],
             work_type: WorkType::Audio,
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([0; 32]),
             creator_id: Address::ZERO,
             created_at: 1_721_500_000,

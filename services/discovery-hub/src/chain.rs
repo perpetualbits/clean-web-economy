@@ -17,6 +17,7 @@ sol! {
     contract Registry {
         function isRegistered(bytes32 workId) external view returns (bool);
         function pricePerMinOf(bytes32 workId) external view returns (uint256);
+        function bandwidthRateOf(bytes32 workId) external view returns (uint256);
         function regionRuleOf(bytes32 workId) external view returns (bytes32);
         function registrantOf(bytes32 workId) external view returns (address);
     }
@@ -29,6 +30,8 @@ pub struct OnChainWork {
     pub registrant: Address,
     /// The registered price per minute (ppm).
     pub price_per_min: u64,
+    /// The registered bandwidth rate (bytes per 1e12 units of proven DAPR weight).
+    pub bandwidth_rate: u64,
     /// The registered region tag.
     pub region: Bytes32,
 }
@@ -61,6 +64,9 @@ pub enum IngestError {
     /// The manifest price disagrees with the on-chain price.
     #[error("price does not match the on-chain value")]
     PriceMismatch,
+    /// The manifest bandwidth rate disagrees with the on-chain bandwidth rate.
+    #[error("bandwidth rate does not match the on-chain value")]
+    BandwidthRateMismatch,
     /// The manifest region disagrees with the on-chain region.
     #[error("region does not match the on-chain value")]
     RegionMismatch,
@@ -101,6 +107,12 @@ pub async fn validate_ingest<R: RegistryView>(
     // Step 4 (compare): price and region must match the chain.
     if m.price_per_min != on_chain.price_per_min {
         return Err(IngestError::PriceMismatch);
+    }
+    // The rate decides how much evidence a claim on this work must carry, so a
+    // manifest that disagrees with the chain is rejected outright rather than
+    // trusted — same rule as the price it sits beside.
+    if m.bandwidth_rate != on_chain.bandwidth_rate {
+        return Err(IngestError::BandwidthRateMismatch);
     }
     if m.region != on_chain.region {
         return Err(IngestError::RegionMismatch);
@@ -149,6 +161,11 @@ impl RegistryView for DiscoveryChain {
             .call()
             .await
             .map_err(|e| e.to_string())?;
+        let bandwidth_rate = registry
+            .bandwidthRateOf(wid)
+            .call()
+            .await
+            .map_err(|e| e.to_string())?;
         let region = registry
             .regionRuleOf(wid)
             .call()
@@ -162,6 +179,8 @@ impl RegistryView for DiscoveryChain {
         Ok(Some(OnChainWork {
             registrant,
             price_per_min: u64::try_from(price).map_err(|_| "price overflow".to_string())?,
+            bandwidth_rate: u64::try_from(bandwidth_rate)
+                .map_err(|_| "bandwidth rate overflow".to_string())?,
             region: Bytes32(region.0),
         }))
     }
@@ -192,6 +211,7 @@ mod tests {
             tags: vec![],
             work_type: WorkType::Audio,
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([7; 32]),
             creator_id: creator,
             created_at: 1,
@@ -209,6 +229,7 @@ mod tests {
         let reg = FakeRegistry(Some(OnChainWork {
             registrant: signer.address(),
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([7; 32]),
         }));
         assert!(validate_ingest(&m, &sig.as_bytes(), &reg).await.is_ok());
@@ -226,6 +247,7 @@ mod tests {
         let reg = FakeRegistry(Some(OnChainWork {
             registrant: other.address(),
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([7; 32]),
         }));
         assert!(matches!(
@@ -244,11 +266,34 @@ mod tests {
         let reg = FakeRegistry(Some(OnChainWork {
             registrant: signer.address(),
             price_per_min: 2_000_000, // differs from the manifest
+            bandwidth_rate: 960_000,
             region: Bytes32([7; 32]),
         }));
         assert!(matches!(
             validate_ingest(&m, &sig.as_bytes(), &reg).await,
             Err(IngestError::PriceMismatch)
+        ));
+    }
+
+    /// A manifest whose bandwidth rate disagrees with the chain is rejected.
+    /// The rate decides how much evidence a claim on this work must carry, so
+    /// a mismatch is refused rather than resolved in either direction.
+    #[tokio::test]
+    async fn bandwidth_rate_mismatch_is_rejected() {
+        let signer = PrivateKeySigner::random();
+        let m = manifest(signer.address());
+        let sig = signer
+            .sign_message_sync(&m.canonical_bytes().unwrap())
+            .unwrap();
+        let reg = FakeRegistry(Some(OnChainWork {
+            registrant: signer.address(),
+            price_per_min: 1_000_000,
+            bandwidth_rate: 2_000_000, // differs from the manifest
+            region: Bytes32([7; 32]),
+        }));
+        assert!(matches!(
+            validate_ingest(&m, &sig.as_bytes(), &reg).await,
+            Err(IngestError::BandwidthRateMismatch)
         ));
     }
 
@@ -279,6 +324,7 @@ mod tests {
         let reg = FakeRegistry(Some(OnChainWork {
             registrant: signer.address(),
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([7; 32]),
         }));
         assert!(matches!(
@@ -297,6 +343,7 @@ mod tests {
         let reg = FakeRegistry(Some(OnChainWork {
             registrant: signer.address(),
             price_per_min: 1_000_000,
+            bandwidth_rate: 960_000,
             region: Bytes32([9; 32]), // differs from the manifest
         }));
         assert!(matches!(
