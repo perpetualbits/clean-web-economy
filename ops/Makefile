@@ -9,7 +9,7 @@ RPC ?= http://127.0.0.1:8545
 # Anvil's well-known dev account #0 (address 0xf39F…2266). Devnet only.
 PRIVATE_KEY ?= 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
-.PHONY: demo test-e2e hub-demo ownership-demo player-demo arbitration-demo antifraud-demo identity-demo zk-demo devnet deploy stop help
+.PHONY: demo test-e2e hub-demo ownership-demo player-demo arbitration-demo antifraud-demo identity-demo zk-demo bandwidth-demo devnet deploy stop help
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -40,6 +40,9 @@ identity-demo: ## Run the verifiable-credential lifecycle end-to-end demo (self-
 
 zk-demo: ## Run the ZK usage-proof end-to-end demo (self-contained Anvil)
 	./zk_demo.sh
+
+bandwidth-demo: ## Run the bandwidth-receipt end-to-end demo (self-contained Anvil)
+	bash demo/run_bandwidth_demo.sh
 
 devnet: ## Start an interactive devnet (Anvil + static works server) via Docker
 	docker compose -f docker-compose.dev.yml up -d

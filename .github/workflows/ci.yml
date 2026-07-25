@@ -331,3 +331,24 @@ jobs:
 
       - name: Run the demo
         run: make -C ops zk-demo
+
+  bandwidth-e2e:
+    name: Bandwidth-receipt end-to-end demo (Anvil)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      # `jq` builds the rates file and reads the settlement's proof output;
+      # `curl` waits for the storage nodes to come up.
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run the demo
+        run: make -C ops bandwidth-demo
