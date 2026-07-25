@@ -6,6 +6,16 @@
 //! build content distribution. Peer discovery, redundancy, proof-of-storage and
 //! the rest live in the deferred storage-swarm cycle.
 //!
+//! One boundary worth naming: the ledger this node signs from records bytes
+//! *read from disk and handed to the response writer*, not bytes confirmed to
+//! have reached the consumer's socket — a plain HTTP handler has no hook to
+//! observe the latter. The node's signature alone therefore is not proof of
+//! delivery. What makes the receipt trustworthy is the OTHER signature: the
+//! consumer counts what it actually received and refuses to counter-sign a
+//! mismatch, and the aggregator only pays out receipts both parties signed. So
+//! an over-attested node count simply produces a receipt nobody will
+//! counter-sign — worthless on its own, and unable to become spendable.
+//!
 //! Configuration (environment):
 //! * `CONTENT_DIR` — directory holding `<work_id>.bin` files (required)
 //! * `PRIVATE_KEY` — this node's signing key; its address is the one that must
@@ -79,11 +89,24 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// Serve a fragment of a work's content and record exactly what was delivered.
+/// Serve a fragment of a work's content and record what was handed to the
+/// response writer for it.
 ///
-/// The recorded byte count is the length of the body actually returned — not
-/// what the caller asked for — so a clamped or short read attests only the bytes
-/// that really moved.
+/// The recorded byte count is the length of the fragment actually read off
+/// disk — not what the caller asked for — so a clamped or short read attests
+/// only the bytes that were really available, never an inflated request size.
+///
+/// What it is NOT: proof of delivery. This count is taken the moment the bytes
+/// are handed to axum's response writer, before they are flushed to the
+/// consumer's socket; if the connection drops mid-transfer the ledger still
+/// holds the full count. A plain HTTP handler has no hook to observe the
+/// client actually receiving the bytes, so establishing that the transfer
+/// completed is deliberately not this function's job — it is the consumer's.
+/// The consumer counts what it actually received and declines to counter-sign
+/// a receipt whose count doesn't match, and the aggregator only pays out
+/// receipts both parties signed. So a receipt only becomes spendable once
+/// node and consumer agree on the number; the node's signature by itself
+/// proves nothing about delivery.
 async fn content(
     State(state): State<Arc<NodeState>>,
     AxumPath(work_id): AxumPath<String>,
@@ -97,7 +120,8 @@ async fn content(
     };
 
     // Record what we are about to hand over, keyed exactly as a later receipt
-    // request will ask for it.
+    // request will ask for it. This is bytes read, not bytes confirmed
+    // delivered; the consumer's counter-signature is what turns it into proof.
     state.ledger.write().await.record(
         &q.session,
         q.chunk,
