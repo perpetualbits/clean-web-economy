@@ -346,7 +346,7 @@ window.PROJECT_MAP = {
     { id: "h3", kind: "harden", label: "H3 — Full DAPR + anti-fraud", status: "done" },
     { id: "h6", kind: "harden", label: "H6 — Verifiable credentials / identity", status: "done" },
     { id: "h2", kind: "harden", label: "H2 — ZK usage proofs (cycle 1)", status: "done" },
-    { id: "h5", kind: "harden", label: "H5 — Storage + real bandwidth receipts", status: "planned" },
+    { id: "h5", kind: "harden", label: "H5 — Storage + real bandwidth receipts", status: "active" },
     { id: "h4", kind: "harden", label: "H4 — Decentralised settlement", status: "planned" },
     { id: "hx", kind: "harden", label: "H7–H10 — tiers · epoch beacon · discovery v2 · security", status: "planned" },
   ],

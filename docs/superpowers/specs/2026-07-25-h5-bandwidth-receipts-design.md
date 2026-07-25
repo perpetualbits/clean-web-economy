@@ -1,0 +1,231 @@
+# H5 — Storage layer + real bandwidth receipts (cycle 1): design
+
+**Date:** 2026-07-25
+**Status:** Design. Sections A–B approved live in brainstorming; Sections C–D drafted
+from the same decisions and pending user review.
+**Governing specs:** `docs/specs/anti-fraud_and_bandwidth_receipt_protocol.md` (AFBRP),
+`docs/specs/client-storage_handshake_specification.md`,
+`docs/specs/storage_node_policy_and_compliance_specification.md`
+**Roadmap item:** H5 (hardening track) — *the P2P storage/swarm that supplies the real
+bandwidth-credibility signal H3 wired as a neutral input, turning the anti-fraud
+"strict loss" from demonstrated to live.*
+
+---
+
+## 1. Purpose and scope
+
+H3 gave DAPR a **bandwidth-credibility multiplier** per work (`bandwidth_ppm`, ppm in
+`[0, 1e6]`): below neutral it *discounts* a work's payout and burns the shortfall (the
+anti-fraud "strict loss"). But settlement passes an **empty (neutral) map** today
+(`services/settlement/src/chain.rs` — "Bandwidth credibility is not yet wired… neutral"),
+and `make antifraud-demo` merely *hand-sets* a low value to show the discount works.
+Nothing real drives it: a modified client can still claim it consumed a work it never
+downloaded. H2 proved the usage *numbers* are honest; it did not prove real content moved.
+
+This cycle delivers the **smallest honest slice that makes the knob live**: a minimal
+storage node that actually serves content bytes, a consumer that downloads and
+**co-signs a bandwidth receipt** with the node, and the aggregator verifying receipts to
+compute a **real per-(user, work) bandwidth-credibility** that feeds DAPR — so a
+"claimed but no bytes moved" fraud becomes a live strict loss.
+
+### 1.1 In scope
+- A minimal Rust `cwe-storage` node: serves content fragments over HTTP, counts bytes
+  served, holds a CWEIdentity **storage-node credential**, co-signs receipts.
+- A consumer-side receipt path: download fragments, co-sign receipts, accumulate a
+  per-epoch **receipt bundle**.
+- Aggregator verification: both signatures, node-credential validity (CWEIdentity),
+  anti-replay, epoch binding; sum verified bytes per (user, work).
+- A **per-row credibility** extension to `cwe_dapr::allocate_from_raw` (neutral default
+  reproduces current payouts bit-for-bit).
+- Settlement integration: a receipts-bundle input drives per-row credibility in event
+  mode; neutral when absent (legacy demos unaffected).
+- `make bandwidth-demo` + a CI job: real download pays full; no-bytes fraud is a strict
+  loss; an uncredentialed node's receipts are rejected.
+
+### 1.2 Explicitly deferred (each a named future cycle)
+- **ZK bandwidth proof** (AFBRP §5): hide which works/peers and per-work bytes from the
+  aggregator (the strong-privacy target; another circuit like H2's).
+- **Peer-diversity proof** (AFBRP §6.2): prove ≥ D distinct peers in ZK.
+- **Full P2P storage swarm** (the two storage specs): IPFS/torrent distribution,
+  redundancy, availability/proof-of-storage, chunk expiry, node registration/discovery.
+- **Node compliance & staking/slashing** (AFBRP §6.3, storage-node policy §8–§12).
+- **Ephemeral-key unlinkability** (AFBRP §4.1, §10.2): per-transfer keys + non-linkable
+  peer pseudonyms. Cycle 1 uses stable node identity keys (credentialed).
+
+### 1.3 Decisions locked in brainstorming
+| # | Decision | Choice |
+|---|---|---|
+| D1 | Cycle ambition | Smallest honest slice: live receipts → real per-(user,work) credibility feeding DAPR. Non-ZK |
+| D2 | Credibility granularity | **Per-(user, work)** (small `allocate_from_raw` extension), not per-work — catches puppet works AND per-user padding, no collateral damage |
+| D3 | Trust anchor | Storage nodes hold a **CWEIdentity "storage-node" credential** (reuse H6's issuer set); aggregator counts only credentialed nodes. Staking/ephemeral-keys deferred |
+| D4 | Privacy boundary | Integrity-first: aggregator sees per-(user,work) bytes + work_id (like H2 cycle-1 revealed work_id). ZK hiding deferred |
+| D5 | Expected-bytes basis | `weight × RATE(W)` — because H2 made minutes/plays private, "expected" derives from the proven weight, not raw minutes |
+
+---
+
+## 2. Architecture
+
+```
+CONSUMER (client)                    STORAGE NODE (cwe-storage)          AGGREGATOR (settlement)
+─────────────────                    ──────────────────────────          ───────────────────────
+ request fragments of work W ──────► serve real bytes; count them
+                            ◄──────  per-chunk receipt (NODE signs)
+ both sign receipt tuple:
+   (work_id, consumer_addr, node_addr,
+    bytes, epoch, session_nonce, chunk_nonce)
+        │
+ accumulate per-epoch receipt bundle
+ submit receipts.json ──────────────────────────────────────────────►  verify BOTH sigs
+                                                                        + node holds a valid CWEIdentity
+                                                                          storage-node credential
+                                                                        + anti-replay (epoch/nonces)
+                                                                        Σ verified bytes per (U,W)
+                                                                        credibility_ppm(U,W) =
+                                                                          clamp(bytes·1e6 /
+                                                                            (weight·RATE(W)), 0, 1e6)
+                                                                        → per-row DAPR discount
+                                                                          (shortfall burned)
+```
+
+**Why mutual signatures:** the node won't sign bytes it didn't serve; the aggregator
+won't count a receipt missing the consumer's signature. Neither party can fabricate a
+receipt alone. The **CWEIdentity storage-node credential** stops a fraudster spinning up
+their own "node" to co-sign fakes with a colluding client — only credentialed nodes count.
+
+### 2.1 Components touched / added
+| Component | Change |
+|---|---|
+| `services/storage` (new crate `cwe-storage`) | HTTP fragment server; node keypair + storage-node credential; byte accounting; per-chunk receipt signing |
+| `libs/receipt` (new crate `cwe-receipt`) | The `Receipt` type, its EIP-191 signing/verification, bundle (de)serialization, anti-replay dedup key — portable, shared by node + consumer + settlement |
+| `clients/player-plugin` (or a demo client) | Download fragments, co-sign receipts, write the receipt bundle |
+| `sims` (`cwe_dapr`) | `allocate_from_raw` gains per-row credibility (extract a per-row-credibility core; keep per-work wrapper) |
+| `services/settlement` | Read + verify the receipts bundle (event mode); compute per-row credibility; pass to the extended DAPR; `RATE(W)` sourced from the manifest/registry/config |
+| `chain/` (CWEIdentity) | A `storage-node` credential type/topic issued to nodes at deploy; the aggregator checks `isValid` |
+| `ops/` | `make bandwidth-demo` + `bandwidth-e2e` CI job |
+
+---
+
+## 3. Receipt format & anti-replay
+
+```
+receipt = {
+  work_id:        bytes32,   // which work's content moved (revealed this cycle)
+  consumer_addr:  address,   // binds bytes to THIS user (per-(user,work) credibility)
+  node_addr:      address,   // storage node; must hold a valid storage-node credential
+  bytes:          u64,       // bytes served, agreed by both parties
+  epoch:          u64,
+  session_nonce:  bytes32,   // per consumer↔node session
+  chunk_nonce:    u64        // per chunk-group within a session
+}
++ sig_node(receipt)          // EIP-191 over the canonical encoding (reuse H1 machinery)
++ sig_consumer(receipt)
+```
+
+- No `Com(...)` hiding — cycle 1 is integrity-first; the aggregator sees per-(user,work)
+  bytes. The commitment/hiding is part of the deferred ZK layer.
+- **Anti-replay** (aggregator-enforced): reject `epoch ≠ settlement epoch`; dedupe on
+  `(node_addr, session_nonce, chunk_nonce)` — repeats dropped. Kills replay of old
+  receipts. A node's `bytes` is capped at the credibility clamp (over-serving buys no
+  extra credit).
+- **Eligibility:** the aggregator recovers `node_addr` from `sig_node` and checks it holds
+  a valid, non-revoked storage-node credential via `CWEIdentity.isValid`. Uncredentialed
+  → the receipt is not counted.
+
+---
+
+## 4. Credibility math (per-(user, work))
+
+```
+expected_bytes(U,W)  = weight(U,W) × RATE(W)          // RATE(W): public per-work
+                                                        //   "bytes per unit weight" constant
+credibility_ppm(U,W) = clamp( verified_bytes(U,W) × 1e6 / expected_bytes(U,W), 0, 1e6 )
+                       // expected == 0 → neutral 1e6 (no expectation ⇒ no discount)
+```
+
+- Honest: `verified_bytes ≈ weight × RATE` → ratio ≈ 1.0 → full credit.
+- Puppet work, no downloads: `verified_bytes = 0` → 0 → **strict loss** (burned).
+- Padder inflating their own weight on a real work: bytes don't scale with the padded
+  weight → ratio < 1 → discounted, and only *their* row.
+- Deterministic integer math (`mul_div`, saturating clamp); no floating point.
+- `RATE(W)` is a public per-work constant published in the work's signed manifest
+  (discovery-hub) or a registry field; for the demo it may come from the deployment
+  config. It is not privacy-sensitive (it's a property of the content, not the user).
+
+---
+
+## 5. DAPR extension (per-row credibility)
+
+Extend `cwe_dapr` without changing existing per-work callers:
+- Extract the core as `allocate_from_raw_with_row_credibility(tier_fees, rows: &[RawRow],
+  credibility_ppm: &[u64])` — `credibility_ppm[i]` is row `i`'s multiplier in `[0, 1e6]`,
+  applied in the **cred** path: `cred_i = mul_div(raw_i, credibility_ppm[i], 1e6)`, while
+  the denominator stays the **bandwidth-free** `rw_u = Σ raw` (so a shortfall is *burned*,
+  not redistributed — H3's strict-loss property preserved).
+- Keep `allocate_from_raw(tier_fees, rows, bandwidth_ppm: &BTreeMap<WorkId,u64>)` as a
+  wrapper that maps each row's work → its per-work credibility and delegates to the core.
+- **Neutral credibility (`1e6`) reproduces current payouts bit-for-bit** — the same
+  property H3 itself guarantees; all existing DAPR tests stay green unchanged.
+
+---
+
+## 6. Settlement integration
+
+- Config: optional `RECEIPTS` env → a receipts-bundle path (mirrors the `DISCLOSURE`
+  pattern). Add the `CWEIdentity` address to `Deployments` (needed for `isValid`).
+- **Event mode** (`services/settlement/src/chain.rs`): after decoding proven rows, if a
+  receipts bundle is present, verify each receipt (both sigs, node credential, anti-replay,
+  epoch), sum verified bytes per (user, work), compute per-row `credibility_ppm` (§4), and
+  call `allocate_from_raw_with_row_credibility`. If absent → neutral (current behavior).
+- **Disclosure mode / legacy demos:** no receipts bundle → neutral bandwidth, unchanged.
+- `RATE(W)` obtained per work from the manifest/registry (MVP: config/bundle metadata).
+
+---
+
+## 7. Demo & tests
+
+### 7.1 `make bandwidth-demo` (CI job `bandwidth-e2e`)
+Self-contained Anvil + a running `cwe-storage` node. Three points:
+1. **Honest consumer** downloads real bytes of work W, co-signs receipts, submits usage
+   (event mode, real proof via the H2 path) + the receipts bundle → credibility ≈ 1.0 →
+   full payout, fees conserved.
+2. **Puppet-work fraud**: a second identity claims heavy usage of work F but downloads no
+   bytes (empty receipts) → credibility 0 → **strict loss** (its fee is burned/unallocated,
+   creator F earns ~0). Assert honest earns full and the fraudster earns ~0.
+3. **Uncredentialed node**: receipts co-signed by a node without a valid storage-node
+   credential are rejected by the aggregator → still a strict loss. Assert rejection.
+
+### 7.2 Unit / integration tests
+- `cwe-receipt`: sign/verify round-trip; a tampered field or missing signature fails;
+  anti-replay dedup key rejects a reused `(node, session, chunk)`.
+- `cwe-storage`: serves the requested bytes; byte count matches; refuses to sign a receipt
+  for bytes it didn't serve.
+- `cwe_dapr`: `allocate_from_raw_with_row_credibility` — neutral row credibility equals
+  `allocate_from_raw` bit-for-bit; a zero-credibility row burns its share (strict loss);
+  a fractional credibility discounts proportionally.
+- Settlement: receipts drive per-row credibility; an uncredentialed/invalid/replayed
+  receipt is dropped; `RATE`/expected-bytes edge cases (expected 0 → neutral).
+
+### 7.3 Full gate stays green
+`cargo fmt/clippy/test`, `forge test`, and the now-**nine** `make …-demo`s (adding
+`bandwidth-demo`).
+
+---
+
+## 8. Roadmap / project-map sync (at merge)
+Flip together: `ROADMAP.md` + `docs/roadmap.md` H5 → done-for-cycle-1 with the deferred
+sub-items listed (ZK bandwidth proof, peer-diversity, full P2P swarm, node
+compliance/staking, ephemeral-key unlinkability); update the "What is real vs stubbed"
+*Anti-fraud* / bandwidth rows; `project-map.js` H5 roadmap entry → done + a
+`cwe-storage`/`cwe-receipt` node; `project.updated` = merge date.
+
+---
+
+## 9. Open questions for review (Sections C–D not yet interactively approved)
+- **`RATE(W)` sourcing:** manifest field vs registry field vs deploy config for the MVP.
+- **Demo usage path:** event mode (real proofs, full-stack, heavier) vs disclosure mode
+  (simpler, no proving) for the usage half of `bandwidth-demo`. Recommendation: event mode
+  for a true "live on the real system" demo, accepting the ~5s proving cost.
+- **Consumer key:** the consumer signs receipts with its wallet key (same address as its
+  usage submission) so bytes attribute to the right user. Confirm no separate key needed.
+- **`cwe-storage` transport:** plain HTTP (recommended, pragmatic) — the real P2P swarm is
+  deferred.
