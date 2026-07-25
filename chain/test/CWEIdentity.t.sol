@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {CWEIdentity} from "../contracts/CWEIdentity.sol";
+import {CredentialTypes} from "../contracts/CredentialTypes.sol";
 
 /// @title CWEIdentityTest
 /// @notice Unit tests for the credential registry: issuer curation, attestation,
@@ -101,5 +102,23 @@ contract CWEIdentityTest is Test {
     function test_setIssuer_onlyOwner() public {
         vm.expectRevert(); // Ownable.NotOwner
         id.setIssuer(alice, true);
+    }
+
+    /// @notice The storage-node credential tag is the agreed keccak of its label,
+    ///         and it behaves like any other credential: attestable, valid,
+    ///         revocable. The settlement aggregator recomputes this same constant
+    ///         off-chain, so a drift here would silently stop every bandwidth
+    ///         receipt from counting.
+    function test_storageNode_lifecycle() public {
+        assertEq(CredentialTypes.STORAGE_NODE, keccak256("cwe.credential.storage-node"));
+
+        address node = makeAddr("storage-node");
+        vm.prank(issuer);
+        id.attest(node, CredentialTypes.STORAGE_NODE, type(uint64).max);
+        assertTrue(id.isValid(node, CredentialTypes.STORAGE_NODE));
+
+        vm.prank(issuer);
+        id.revoke(node, CredentialTypes.STORAGE_NODE);
+        assertFalse(id.isValid(node, CredentialTypes.STORAGE_NODE));
     }
 }

@@ -9,4 +9,7 @@ library CredentialTypes {
     bytes32 internal constant VERIFIED_CREATOR = keccak256("cwe.credential.verified-creator");
     /// @notice An allowlisted juror, permitted to vote in arbitration disputes.
     bytes32 internal constant JUROR = keccak256("cwe.credential.juror");
+    /// @notice A credentialed storage node, whose co-signed bandwidth receipts the
+    ///         settlement aggregator will count toward bandwidth credibility.
+    bytes32 internal constant STORAGE_NODE = keccak256("cwe.credential.storage-node");
 }
