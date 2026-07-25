@@ -288,11 +288,22 @@ bandwidth rate** so no act can pass or fail for a missing-rate reason.
 | # | Act | Proves |
 |---|---|---|
 | 1 | Honest full download | Paid in full *(cycle 1 regression)* |
-| 2 | Abandoned transfers | Requests every chunk but abandons each part-way → no chunk completes → **zero** verified bytes → strict loss |
+| 2 | Never downloaded | Requests receipts for every chunk without downloading any → the node holds no ledger entry and refuses all → **zero** verified bytes → strict loss |
 | 3 | Re-fetch amplification | Fetches chunk 0 a hundred times → credited once → strict loss |
 | 4 | Dust weight | Tiny claimed weight, negligible bytes → epoch floor drives credibility to 0 |
 | 5 | Unset rate | A work whose `bandwidthRate` was never set → fails closed |
 | 6 | Uncredentialed node | Receipts rejected *(cycle 1 regression)* |
+
+**Where mid-transfer abandonment is proven, and why not here.** An "abandon the transfer
+part-way" act would be a race rather than a test. The node writes 16 KiB pieces into a
+socket whose buffers auto-tune to megabytes, so on loopback a whole 128 KiB chunk is
+usually absorbed by the kernel before the client's abort is noticed; the stream then
+completes legitimately and the chunk is credited. That is correct behaviour — the bytes did
+leave the server, which is what §3.2 says the measure counts — but it makes any byte-exact
+demo assertion timing-dependent. Mid-transfer abandonment is therefore proven
+**deterministically at the unit level** by driving `DeliveryStream` directly with no
+sockets (§7). Act 2 exercises the same trust property in its race-free form: a client
+asking the node to attest content it never requested at all.
 
 **Assertions must target mechanisms, not only payouts.** Cycle 1 asserted only on final
 payouts, which is how a wrong-reason failure can masquerade as a right-reason pass.

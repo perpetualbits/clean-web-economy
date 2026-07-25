@@ -36,13 +36,21 @@ Read it before Task 1. Decisions E1–E6 and §2 (why the three changes compose)
   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
   `(cd chain && forge test)`. Do **not** run `forge fmt`.
 - **Expected red window — Tasks 1 through 6.** Task 1 changes the `Receipt` struct, which
-  is a breaking change for `cwe-storage` and `cwe-settlement`. Those crates do not compile
-  again until Task 2 and Task 6 respectively. This is inherent to a breaking type change
-  and is **not** a defect: implementers and reviewers for Tasks 1-5 must verify with
-  **per-crate** commands (`cargo test -p <crate>`, `cargo clippy -p <crate> --all-targets
-  -- -D warnings`) and must **not** treat a workspace-wide build failure in an untouched
-  downstream crate as a finding. `cargo fmt --all -- --check` works throughout and stays
-  required. From Task 6 onward the full workspace gate applies again and must pass.
+  is a breaking change for three downstream targets, each repaired by a different task:
+  the `cwe-storage` **library and node binary** (Task 2), the `bandwidth-client` **binary
+  inside the same crate** (Task 3), and `cwe-settlement` (Task 6). This is inherent to a
+  breaking type change and is **not** a defect. Implementers and reviewers for Tasks 1-5
+  must verify with **target-scoped** commands and must **not** treat a build failure in a
+  target another task owns as a finding:
+  - Task 1: `cargo test -p cwe-receipt`, `cargo clippy -p cwe-receipt --all-targets -- -D warnings`
+  - Task 2: `cargo test -p cwe-storage --lib`, `cargo build -p cwe-storage --lib --bin cwe-storage`,
+    `cargo clippy -p cwe-storage --lib --bin cwe-storage -- -D warnings`
+    (**not** `--all-targets`, and **not** a bare `-p cwe-storage` — both pull in
+    `bandwidth_client.rs`, which is Task 3's file and still references the removed fields)
+  - Task 3 onward: `-p cwe-storage` unscoped works again
+  - Tasks 4-5: their own crates only
+  `cargo fmt --all -- --check` works throughout and stays required. From Task 6 onward the
+  full workspace gate applies again and must pass.
 - **Never kill a process you did not start.** Capture exact PIDs (`cmd & PID=$!`) and kill
   only those. No `pkill`/`killall`/pattern kills — one previously killed a user's browser.
 - Foundry lives at `$HOME/.foundry/bin`; prepend it to `PATH`.
@@ -72,7 +80,7 @@ file (32 chunks).
 | `libs/receipt/src/lib.rs` | `Receipt` reshaped to carry `chunk_index`; `CHUNK_SIZE`; dedup key on content position |
 | `services/storage/src/lib.rs` | Ledger keyed by content position; `DeliveryStream` (all-or-nothing credit); `fragment_for_chunk` |
 | `services/storage/src/main.rs` | `/content` takes `chunk_index`; streams the chunk; `std::sync::Mutex` ledger |
-| `services/storage/src/bin/bandwidth_client.rs` | Requests by chunk index; `--mode honest\|abandon\|refetch` |
+| `services/storage/src/bin/bandwidth_client.rs` | Requests by chunk index; `--mode honest\|no-download\|refetch` |
 | `chain/contracts/CWERegistry.sol` | `bandwidthRate` field, clamped registrant-only setter, getter |
 | `chain/test/CWERegistry.t.sol` | Setter/clamp/getter coverage |
 | `services/discovery-hub/src/manifest.rs`, `src/chain.rs` | Manifest mirrors `bandwidth_rate`; validated against chain |
@@ -769,17 +777,30 @@ git commit -m "storage: address content by chunk index and credit only fully del
 **Interfaces:**
 - Consumes: `cwe_receipt::{CHUNK_SIZE, Receipt, ReceiptBundle, SignedReceipt}`; the node's
   HTTP surface from Task 2.
-- Produces: `bandwidth-client --mode honest|abandon|refetch`. Environment: `STORAGE_URL`
+- Produces: `bandwidth-client --mode honest|no-download|refetch`. Environment: `STORAGE_URL`
   (default `http://127.0.0.1:8546`), `WORK_ID`, `PRIVATE_KEY`, `EPOCH`, `CHUNKS`
   (default `4`), `OUT`, and `REPEATS` (default `100`, `refetch` mode only).
 
 **Design notes:**
 - The adversarial modes exist so the demo can prove the fixes actually bite. This follows
   the pattern `zk_submit --mode tamper-digest` already established in this repo.
-- `abandon` must genuinely stop reading mid-chunk — use `bytes_stream()` and drop after
-  the first slice. Buffering the whole body first would defeat the point and make the
-  demo prove nothing.
 - The five field checks added in cycle 1 stay, updated to the new shape.
+
+**Why the "never downloaded" mode is `no-download` and not "abandon mid-transfer".**
+The obvious adversarial mode — start a chunk, read one slice, drop the connection — cannot
+be asserted on deterministically over loopback. The node writes 16 KiB pieces into a
+socket whose buffers auto-tune to megabytes, so a whole 128 KiB chunk is usually absorbed
+by the kernel before the client's abort is noticed; the stream then completes legitimately
+and the chunk is credited. That is not a bug — the bytes really did leave the server, which
+is exactly what the measure counts (spec §3.2: receive-and-discard is an ordinary download,
+not a threat) — but it makes any byte-exact demo assertion a race.
+
+Mid-transfer abandonment is therefore proven **deterministically at the unit level** by
+Task 2's `abandoned_stream_credits_nothing`, which drives the stream directly with no
+sockets involved. The demo instead exercises the same trust property over HTTP in a form
+that has no race: a client that requests **receipts for chunks it never downloaded at
+all**. The node has no ledger entry, refuses every request, and the client ends with zero
+receipts — every time.
 
 - [ ] **Step 1: Rewrite the download and mode dispatch**
 
@@ -818,34 +839,9 @@ async fn fetch_chunk_fully(
     Ok(body.len() as u64)
 }
 
-/// Request a chunk and ABANDON it after the first slice, without draining.
-///
-/// This is the adversarial path: it makes the node begin a delivery that never
-/// completes. Because crediting is all-or-nothing, the node must record nothing
-/// and refuse to sign for the chunk. Dropping the response mid-stream is the
-/// whole point — buffering it first would make this an honest download.
-async fn fetch_chunk_abandoned(
-    http: &reqwest::Client,
-    base: &str,
-    work_id: &str,
-    consumer: &str,
-    chunk_index: u64,
-) -> Result<(), BoxErr> {
-    let resp = http
-        .get(format!("{base}/content/{work_id}"))
-        .query(&[
-            ("consumer", consumer.to_string()),
-            ("chunk_index", chunk_index.to_string()),
-        ])
-        .send()
-        .await?
-        .error_for_status()?;
-
-    let mut stream = resp.bytes_stream();
-    // Take at most one slice, then drop the stream and the response with it.
-    let _ = stream.next().await;
-    Ok(())
-}
+// NOTE: there is deliberately no "download" helper for the `no-download` mode —
+// that mode's whole point is that it never requests content at all, and goes
+// straight to asking the node to attest chunks it never delivered.
 
 /// Ask the node to attest a delivered chunk, verify its signature and the
 /// fields we asked for, and counter-sign.
@@ -982,11 +978,11 @@ async fn main() -> Result<(), BoxErr> {
                 }
             }
         }
-        // Start every chunk and finish none. The node must credit nothing, so
-        // every receipt request is expected to be refused.
-        "abandon" => {
+        // Download nothing at all, then ask the node to attest every chunk
+        // anyway. The node holds no ledger entry for any of them, so it must
+        // refuse each request and this mode must end with ZERO receipts.
+        "no-download" => {
             for chunk_index in 0..chunks {
-                fetch_chunk_abandoned(&http, &base, &work_id, &consumer, chunk_index).await?;
                 if let Some(sr) = co_sign_chunk(
                     &http, &base, &signer, &work_id, &consumer, epoch, chunk_index, None,
                 )
@@ -1044,7 +1040,7 @@ CONTENT_DIR=$TMP PRIVATE_KEY=$NODE_KEY EPOCH=1 PORT=8546 \
 NODE_PID=$!
 until curl -sf http://127.0.0.1:8546/health >/dev/null; do :; done
 
-for M in honest abandon refetch; do
+for M in honest no-download refetch; do
   STORAGE_URL=http://127.0.0.1:8546 WORK_ID=$WORK PRIVATE_KEY=$CONS_KEY EPOCH=1 \
     CHUNKS=4 REPEATS=10 OUT=$TMP/$M.json \
     cargo run -q -p cwe-storage --bin bandwidth-client -- --mode $M
@@ -1053,17 +1049,17 @@ done
 # Kill ONLY the node we started, by the exact PID we captured.
 kill -TERM "$NODE_PID"
 echo "honest receipts:  $(jq '.receipts | length' $TMP/honest.json)"
-echo "abandon receipts: $(jq '.receipts | length' $TMP/abandon.json)"
+echo "no-download receipts: $(jq '.receipts | length' $TMP/no-download.json)"
 echo "refetch receipts: $(jq '.receipts | length' $TMP/refetch.json)"
 rm -rf "$TMP"
 ```
 
-Expected: `honest receipts: 4`, **`abandon receipts: 0`** (the node refused every one),
+Expected: `honest receipts: 4`, **`no-download receipts: 0`** (the node refused every one),
 `refetch receipts: 10` (all for chunk 0 — the aggregator, not the client, is what
 collapses them).
 
-If `abandon` produces receipts, the fix is not working: the client is draining the body
-before dropping it. Do not proceed — report it.
+If `no-download` produces ANY receipts, the node is signing for content it never
+delivered — the core trust property is broken. Do not proceed; report it.
 
 - [ ] **Step 4: Check formatting and lints**
 
@@ -1074,7 +1070,7 @@ Expected: both clean.
 
 ```bash
 git add services/storage/src/bin/bandwidth_client.rs
-git commit -m "storage: chunk-indexed client with abandon and refetch modes for the demo"
+git commit -m "storage: chunk-indexed client with no-download and refetch modes for the demo"
 ```
 
 ---
@@ -1778,13 +1774,13 @@ The six acts, each with its own user and work:
 
 Five new works must be registered alongside the existing ones, each with its own payee and
 consent signature — reuse the script's existing `register_work` helper:
-`$WORK_W` (honest), `$WORK_G` (abandoned), `$WORK_R` (refetch), `$WORK_D` (dust),
+`$WORK_W` (honest), `$WORK_G` (no-download), `$WORK_R` (refetch), `$WORK_D` (dust),
 `$WORK_N` (no rate). Act 6 reuses `$WORK_W`.
 
 | Act | User | Work | Content | Client invocation |
 |---|---|---|---|---|
 | 1 honest | `$U1` | `$WORK_W` | 4 MiB | `--mode honest CHUNKS=32` |
-| 2 abandoned | `$U2` | `$WORK_G` | 4 MiB | `--mode abandon CHUNKS=32` |
+| 2 no-download | `$U2` | `$WORK_G` | 4 MiB | `--mode no-download CHUNKS=32` |
 | 3 refetch | `$U3` | `$WORK_R` | 4 MiB | `--mode refetch REPEATS=100` |
 | 4 dust weight | `$U4` | `$WORK_D` | **1 KiB** | `--mode honest CHUNKS=1` |
 | 5 unset rate | `$U5` | `$WORK_N` | 4 MiB | `--mode honest CHUNKS=32` |
@@ -1816,10 +1812,10 @@ bytes_of()  { jq -r --arg u "$1" --arg w "$2" \
 [ "$(bytes_of "$(cast wallet address $U1)" "${WORK_W,,}")" -ge 4000000 ] \
   || fail "honest act did not register its downloaded bytes"
 
-# Act 2 — abandoned transfers: ZERO evidence (the mechanism), and a burned fee.
+# Act 2 — never downloaded: ZERO evidence (the mechanism), and a burned fee.
 B2=$(bytes_of "$(cast wallet address $U2)" "${WORK_G,,}")
-[ "$B2" = "0" ] || fail "abandoned transfers were credited $B2 bytes, expected 0"
-[ "$(credit_of "${WORK_G,,}")" = "0" ] || fail "abandoned-transfer work earned credit"
+[ "$B2" = "0" ] || fail "undownloaded chunks were credited $B2 bytes, expected 0"
+[ "$(credit_of "${WORK_G,,}")" = "0" ] || fail "work with no downloads earned credit"
 
 # Act 3 — refetch: 100 receipts for one chunk collapse to a single chunk's bytes.
 B3=$(bytes_of "$(cast wallet address $U3)" "${WORK_R,,}")
