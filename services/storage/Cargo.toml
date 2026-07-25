@@ -24,3 +24,7 @@ thiserror.workspace = true
 [[bin]]
 name = "cwe-storage"
 path = "src/main.rs"
+
+[[bin]]
+name = "bandwidth-client"
+path = "src/bin/bandwidth_client.rs"
