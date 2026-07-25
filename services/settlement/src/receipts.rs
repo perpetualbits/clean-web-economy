@@ -437,11 +437,21 @@ mod tests {
         );
     }
 
-    /// The same dust row WITH at least a byte of verified evidence gets
-    /// nonzero (though tiny) credibility — confirming the floor-at-1 fix
-    /// discounts a dust claim rather than banning it outright.
+    /// At this weight, `expected` floors (via the `.max(1)` guard) to a single
+    /// byte, so ONE byte of evidence already meets the whole expectation and
+    /// earns full (`1_000_000` ppm) credibility — not a small discount. This
+    /// is a KNOWN LIMITATION of the linear ratio model, not a desirable
+    /// property: below the point where expected bytes would floor to zero,
+    /// the model cannot express "the claimant provided less evidence than a
+    /// full-weight claim would need," because there is no room left under one
+    /// byte to discount into. Closing this residual (a dust-weight claim plus
+    /// one byte still captures the whole fee) needs an absolute floor on
+    /// expected bytes or weight-sensitivity in the payout target — a
+    /// spec-level decision, not something this test asserts or this module
+    /// attempts to fix. This test exists only to PIN the actual boundary
+    /// behaviour so a future change to the floor cannot silently drift.
     #[test]
-    fn dust_weight_row_with_some_evidence_is_discounted_not_banned() {
+    fn dust_weight_expectation_floors_to_one_byte() {
         let rows = vec![RawRow {
             user: "0xu".into(),
             work: work(),
@@ -451,9 +461,11 @@ mod tests {
         verified.insert(("0xu".to_string(), work()), 1u128);
         let mut rates = BTreeMap::new();
         rates.insert(work(), 960_000u64);
-        let got = row_credibility_ppm(&rows, &verified, &rates);
-        assert_eq!(got.len(), 1);
-        assert!(got[0] > 0, "a byte of evidence must earn some credibility");
+        assert_eq!(
+            row_credibility_ppm(&rows, &verified, &rates),
+            vec![1_000_000],
+            "one byte meets the floored-at-1 expectation and earns full credit"
+        );
     }
 
     /// Credibility is per-(user, work): one user's bytes do not credit another's
