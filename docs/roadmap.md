@@ -11,22 +11,24 @@ detailed, status-annotated plan.
 
 ## 1. Where we are
 
-Eight milestones are complete and merged to `main`, each with a one-command
+Nine milestones are complete and merged to `main`, each with a one-command
 end-to-end demo on a local Anvil devnet.
 
 | Area | Built | Status |
 |---|---|---|
 | **Contracts** (`chain/`) | `CWETiers`, `CWEConsumption`, `CWEPayouts`, `IProofVerifier`/`AcceptAllVerifier`/`Groth16Verifier` (real BN254 pairing check); `CWEEpochBeacon` (published per-epoch key); `CWERegistry` (+ `content_id`, multi-party consent, registration timestamp); `CWEEscrow` (async dispute flow) + `EarliestRegistrationArbiter`/`IArbiter`; `CWEJury`/`IJury` (committee); `CWEIdentity`/`ICWEIdentity` (verifiable credentials) | ✅ Phase 1 · H1 · Phase 2·3 · H6 · H2 |
-| **Payout math** (`sims/`) | `cwe-dapr` — user-centric DAPR: diminishing returns, bandwidth-credibility discount, reputation signal; deterministic integer math, fee-conserving | ✅ Phase 1 · H3 |
+| **Payout math** (`sims/`) | `cwe-dapr` — user-centric DAPR: diminishing returns, bandwidth-credibility discount (now real per-(user, work) credibility from verified receipts, neutral default when absent), reputation signal; deterministic integer math, fee-conserving | ✅ Phase 1 · H3 · H5 |
 | **Fingerprint** (`libs/fingerprint`) | Haitsma-Kalker perceptual fingerprint (gain-invariant, Hamming compare), `fp:<hex>` format | ✅ H1 |
 | **Client core** (`libs/wallet-zk`) | keccak commitments, Poseidon commitments shared with the ZK circuit, `none-v0` ZK seam, epoch session store | ✅ Phase 1 · H2 |
 | **ZK usage circuits** (`libs/zk-circuits`) | Groth16/BN254 circuit proving usage is well-formed, range-bounded, diminishing-returns-capped, epoch-bound, and per-work-unique; Poseidon commitments/pseudonyms/digest; devnet trusted-setup + prover; EVM proof-point export | ✅ H2 (cycle 1) |
-| **Settlement** (`services/settlement`) | reads events, opens commitments, runs DAPR, commits Merkle root; routes signed → direct payout, fingerprint → escrow; dual-mode: legacy disclosure-file path (pre-ZK demos) or event mode paying from Groth16-proven usage weights (`make zk-demo`) | ✅ Phase 1 · H1 · H2 |
+| **Bandwidth receipts** (`libs/receipt`) | `cwe-receipt` — the co-signed `Receipt` tuple (work, consumer, node, bytes, epoch, session/chunk nonces), RFC 8785 canonical bytes, EIP-191 sign/recover, anti-replay dedup key; portable, shared by the storage node, the consumer, and settlement | ✅ H5 (cycle 1) |
+| **Storage** (`services/storage`) | `cwe-storage` — a minimal HTTP node serving real content fragments, a byte-accounting ledger keyed by (session, chunk), and receipt co-signing against its own ledger (never a caller-supplied count) | ✅ H5 (cycle 1) |
+| **Settlement** (`services/settlement`) | reads events, opens commitments, runs DAPR, commits Merkle root; routes signed → direct payout, fingerprint → escrow; dual-mode: legacy disclosure-file path (pre-ZK demos) or event mode paying from Groth16-proven usage weights (`make zk-demo`); event mode also verifies a co-signed receipts bundle to compute real per-(user, work) bandwidth credibility (`make bandwidth-demo`) | ✅ Phase 1 · H1 · H2 · H5 |
 | **Browser extension** (`clients/browser-ext`) | Rust→WASM core + MV3 shell; local accounting, price cap, settle flow; two-tier recognition (signed content + fingerprint fallback) | ✅ Phase 1 · H1 |
 | **Discovery Hub** (`services/discovery-hub`) | signed, chain-anchored manifest ingest; content-id (Tier 1) + fingerprint nearest-match (Tier 2) resolve; search/trending; OpenAPI | ✅ Phase 2·1 · H1 |
 | **Player agent** (`clients/player-plugin`) | native Rust `cwe-player`: symphonia decode → two-tier recognition → price cap → accrual → on-chain settle; `play`/`status`/`settle`/`fingerprint` | ✅ Phase 2·2 |
 | **Arbitration jury** (`chain/`) | `CWEJury` committee: owner-appointed jurors, file→vote→finalize, majority verdict moves the escrow, earliest-registration fallback on a tie/silence | ✅ Phase 2·3 |
-| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, `make player-demo`, `make arbitration-demo`, `make antifraud-demo`, `make identity-demo`, `make zk-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e/player-e2e/arbitration-e2e/antifraud-e2e/identity-e2e/zk-e2e) | ✅ |
+| **Devnet & demos** (`ops/`) | `make demo`, `make hub-demo`, `make ownership-demo`, `make player-demo`, `make arbitration-demo`, `make antifraud-demo`, `make identity-demo`, `make zk-demo`, `make bandwidth-demo`, CI (rust/contracts/extension/e2e/hub-e2e/ownership-e2e/player-e2e/arbitration-e2e/antifraud-e2e/identity-e2e/zk-e2e/bandwidth-e2e) | ✅ |
 
 ### What is real vs. stubbed
 
@@ -39,12 +41,12 @@ seam designed for drop-in replacement:
 | Fingerprinting | Haitsma-Kalker perceptual (gain-invariant); production robustness (re-encode, landmark/chromaprint) still to come | `fingerprinting_specification.md` |
 | Payout weighting | `minutes·price·region`, largest-remainder split | `DAPR_usage_aggregation_protocol.md` (bandwidth, diminishing returns, diversity) |
 | Settlement trust | single trusted aggregator commits a Merkle root | `rollup_aggregation_and_settlement_Interface_specification.md` |
-| Storage | none | `client-storage_handshake_specification.md`, `storage_node_policy_and_compliance_specification.md` |
+| Storage | a single real `cwe-storage` HTTP node serving actual content bytes and co-signing receipts against its own serving ledger; swarm distribution, redundancy, availability/proof-of-storage, and node discovery are still to come | `client-storage_handshake_specification.md`, `storage_node_policy_and_compliance_specification.md` |
 | Identity | ✅ verifiable credentials (issuer set, attest/revoke, expiry) via `CWEIdentity`; real eID/proof-of-personhood/OIDC/DID-JSON-LD still to come | SSI/VC (creator registration, threat models) |
 | Tiers | tier tied to wallet address | `tier_capability_token_format.md` |
 | Epoch | fixed 30-day window | `epoch_beacon_specification.md` |
 | Discovery | resolution + basic search | federation, differential privacy, DAPR-fed ranking, reputation |
-| Anti-fraud | fingerprint earnings escrow + challenge window + earliest-registration arbiter (jury seam); tier split still disclosure-asserted | `anti-fraud_and_bandwidth_receipt_protocol.md` |
+| Anti-fraud | fingerprint earnings escrow + challenge window + earliest-registration arbiter (jury seam); tier split still disclosure-asserted; a claim of usage backed by zero co-signed bytes is now a live strict loss (real per-(user, work) bandwidth credibility from verified receipts, not a hand-set demo value) | `anti-fraud_and_bandwidth_receipt_protocol.md` |
 | Provenance | multi-party consent (each payee EIP-191-signs their share); content-id ownership | signed-exact beats fingerprint; arbitration jury for the residual case |
 
 ---
@@ -140,13 +142,42 @@ track:
   and a diversity/reputation signal for discovery — all deterministic integer math,
   fee-conserving, with neutral defaults reproducing the prior payouts bit-for-bit.
   Fraud is structurally capped (extract ≤ pay-in) and becomes a strict loss under low
-  bandwidth credibility (`make antifraud-demo`). *Deferred:* real ZK bandwidth
-  receipts (H5), reputation→hub-ranking wiring, the staked/global-pool alternatives.
+  bandwidth credibility (`make antifraud-demo`, now live via H5). *Deferred:* real ZK
+  bandwidth receipts, reputation→hub-ranking wiring, the staked/global-pool alternatives.
 - **H4 — Decentralised settlement** (`rollup_aggregation_and_settlement_Interface_specification.md`):
   move from a single trusted aggregator to a rollup/multi-aggregator model.
-- **H5 — Storage layer** (`client-storage_handshake_specification.md`,
-  `storage_node_policy_and_compliance_specification.md`): IPFS/torrent content
-  distribution + node policy/compliance; the missing piece for real content delivery.
+- ✅ **H5 — Storage layer + real bandwidth receipts (cycle 1)**
+  (`client-storage_handshake_specification.md`,
+  `storage_node_policy_and_compliance_specification.md`,
+  `anti-fraud_and_bandwidth_receipt_protocol.md`): a minimal `cwe-storage` node serves
+  real content bytes and holds a CWEIdentity storage-node credential; a consumer
+  downloads and co-signs a bandwidth receipt per chunk (`cwe-receipt`); settlement's
+  event mode verifies both signatures, the node credential, and anti-replay, then
+  computes a real per-(user, work) bandwidth credibility that feeds `cwe_dapr`'s
+  per-row discount (neutral when a receipts bundle is absent, so the legacy demos are
+  bit-for-bit unchanged). `RATE(W)` — the "bytes per unit weight" expectation — is an
+  aggregator deploy-config constant this cycle, fails closed (credibility 0) on a
+  missing/zero rate rather than failing open, and is never read from the receipts
+  bundle. `make bandwidth-demo` proves three things end to end: an honest download
+  pays in full; a puppet-work claim backed by zero bytes is now a live strict loss (fee
+  burned, claimant earns nothing); and a node lacking the storage-node credential has
+  its receipts rejected outright. *Deferred:* a ZK bandwidth proof (hide which
+  works/peers and per-work bytes), a peer-diversity proof, the full P2P storage swarm
+  (distribution, redundancy, availability/proof-of-storage, node discovery), node
+  compliance & staking/slashing, ephemeral-key unlinkability (cycle 1 uses stable
+  credentialed node keys), and `RATE(W)` graduating from deploy config to a
+  manifest/registry field — which needs a protocol-level floor to keep it
+  beneficiary-independent (spec §4.1). *Known limitation, not closed this cycle:*
+  because `expected_bytes = weight · RATE(W) / 1e12` floors to a minimum of one byte,
+  a claim with a very small claimed weight reaches full credibility after verifying a
+  single byte — and because the payout target is scale-invariant, that single-row
+  claimant still recovers 100% of their own fee, the same as an honest claimant who
+  must move ~960 KB for the same credit. This is a *deterrent* gap, not a
+  money-extraction one: the "extract ≤ pay-in" cap still holds (a claimant only ever
+  recovers their own fee) and a credentialed node must still genuinely serve and
+  co-sign that byte. Closing it needs an absolute floor on expected bytes per claim, or
+  weight-magnitude sensitivity in the payout target — deferred as a spec-level decision
+  to a later cycle.
 - ✅ **H6 — SSI/VC identity**: `CWEIdentity` — a rotatable issuer set grants revocable,
   expiring verifiable credentials; the registry and jury gate on `isValid` instead of
   owner allowlists (both removed). Removing an issuer invalidates all their credentials
@@ -177,6 +208,7 @@ flowchart LR
   H1 --> H3[H3 Full DAPR + anti-fraud ✅]
   H1 --> P23[2.3 Arbitration ✅]
   H3 --> H9
+  H3 --> H5[H5 Storage + bandwidth receipts ✅ cycle 1]
   H6[H6 SSI identity ✅] --> P3[Phase 3 DMF]
   P22 --> P3
   H2[H2 ZK proofs ✅ cycle 1] --> H4[H4 Decentralised settlement]
@@ -188,35 +220,37 @@ Critical enablers: **H1 (recognition & ownership)** ✅, **H6 (identity)** ✅, 
 **H2 (ZK usage proofs, cycle 1)** ✅ are in — recognition/provenance/escrow plus a
 credential layer that gates registration and graduates the jury (unblocking
 **Phase 3**), and a real integrity proof replacing the disclosure file's trust
-assumption for usage. **H4 (decentralised settlement)** is the remaining
-trust-minimisation piece, and a second H2 cycle (work-identity blinding, the
-manifest/tier circuits, cross-epoch unlinkability, a real beacon, and migrating
-the legacy demos) can trail the feature work.
+assumption for usage. **H5 (storage + real bandwidth receipts, cycle 1)** ✅ turns H3's
+neutral bandwidth-credibility input live, off the same DAPR seam. **H4 (decentralised
+settlement)** is the remaining trust-minimisation piece, and a second H2 cycle
+(work-identity blinding, the manifest/tier circuits, cross-epoch unlinkability, a real
+beacon, and migrating the legacy demos) can trail the feature work.
 
 ---
 
 ## 5. Recommended near-term next steps
 
 Ranked by value-per-effort given what exists. **Phase 2 is complete** (Discovery Hub,
-player agent, arbitration jury); **H3 (DAPR + anti-fraud)**, **H6 (identity)**, and now
-**H2 cycle 1 (ZK usage proofs)** have landed — so the recognition/provenance/escrow/
-payout core, a credential layer, and a real on-chain integrity proof for usage are in
-place, and the next moves are first Phase 3 groundwork and the remaining
-trust-minimisation items:
+player agent, arbitration jury); **H3 (DAPR + anti-fraud)**, **H6 (identity)**,
+**H2 cycle 1 (ZK usage proofs)**, and now **H5 cycle 1 (storage + real bandwidth
+receipts)** have landed — so the recognition/provenance/escrow/payout core, a
+credential layer, a real on-chain integrity proof for usage, and a live bandwidth-
+credibility signal are all in place, and the next moves are first Phase 3 groundwork
+and the remaining trust-minimisation items:
 
 1. **Phase 3 — Creator DMF.** Now unblocked by H6 identity: creator shops, gigs,
    split-pay, a signed service registry, SSI/OIDC auth.
-2. **H5 — Storage layer + real bandwidth receipts.** The peer-to-peer storage/swarm
-   that supplies the *real* bandwidth-credibility signal H3 wired as a neutral input —
-   turning the anti-fraud "strict loss" from demonstrated to live.
-3. **H2 — cycle 2 (deferred from cycle 1).** Work-identity blinding (hide *which*
+2. **H2 — cycle 2 (deferred from cycle 1).** Work-identity blinding (hide *which*
    works a user consumed), a manifest-signature circuit, a tier-eligibility circuit,
    cross-epoch unlinkability, a real randomness beacon (VRF/drand) for
    `CWEEpochBeacon`, and migrating the four legacy demos plus the player off the
    disclosure path onto real proofs.
-4. **H4 — Decentralised settlement.** Rollup/multi-aggregator model, now that event
+3. **H4 — Decentralised settlement.** Rollup/multi-aggregator model, now that event
    mode gives the aggregator a proof-backed usage signal to build on.
-5. **Follow-ons:** the reputation→hub-ranking wiring (H3 fast-follow); the player
-   agent's VLC/FFmpeg C module + video fingerprinting; the trustless staked jury.
+4. **Follow-ons:** the reputation→hub-ranking wiring (H3 fast-follow); the player
+   agent's VLC/FFmpeg C module + video fingerprinting; the trustless staked jury; H5
+   cycle 2 (ZK bandwidth proof, peer-diversity proof, full P2P swarm, node
+   compliance/staking, ephemeral-key unlinkability, and closing the dust-weight
+   credibility gap noted in the H5 write-up above).
 
 Each becomes its own spec → plan → build cycle. This document is updated as items land.

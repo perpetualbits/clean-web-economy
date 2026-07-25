@@ -51,6 +51,20 @@ compute a **real per-(user, work) bandwidth-credibility** that feeds DAPR — so
 - **Node compliance & staking/slashing** (AFBRP §6.3, storage-node policy §8–§12).
 - **Ephemeral-key unlinkability** (AFBRP §4.1, §10.2): per-transfer keys + non-linkable
   peer pseudonyms. Cycle 1 uses stable node identity keys (credentialed).
+- **Dust-weight credibility floor** *(found in review, deliberately deferred — not a
+  gap the team missed)*: `expected_bytes(U,W) = weight(U,W) × RATE(W) / 1e12` (§4)
+  floors to a minimum of one byte (`.max(1)` in `services/settlement/src/receipts.rs`)
+  once the claimed weight is small enough, so verifying **one** byte buys full
+  (`1e6`) credibility for that row. Because the DAPR payout target is scale-invariant,
+  a single-row claimant at full credibility still receives 100% of their own tier fee
+  — so a "dust weight plus one verified byte" claim still routes a whole tier fee to
+  a puppet work, with nothing burned, whereas an honest one-minute claim must move
+  ~960 KB for the same credit. This is a *deterrent* gap, not a money-extraction hole:
+  the claimant only ever recovers their own fee (the "extract ≤ pay-in" cap from H3
+  still holds), and a credentialed node must still genuinely serve and co-sign that
+  byte — it is not free to manufacture. Closing it needs either an absolute floor on
+  expected bytes per claim, or weight-magnitude sensitivity in the payout target
+  itself; both are spec-level decisions deferred to a later cycle.
 
 ### 1.3 Decisions locked in brainstorming
 | # | Decision | Choice |

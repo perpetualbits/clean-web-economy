@@ -48,12 +48,23 @@ Runs alongside the feature phases.
   is dual-mode, paying from proven event weights (event mode) while the disclosure
   file remains the legacy path for the pre-ZK demos (`make -C ops zk-demo`) — see
   `docs/superpowers/specs/2026-07-24-zk-usage-proofs-design.md`
+- [x] **H5 — Storage layer + real bandwidth receipts (cycle 1)** ✅ — a minimal
+  credentialed `cwe-storage` node serves real content bytes and co-signs bandwidth
+  receipts (`cwe-receipt`) with the consumer; settlement verifies both signatures
+  and the storage-node credential to compute a real per-(user, work) bandwidth
+  credibility that feeds `cwe-dapr`'s discount, turning H3's neutral input live
+  (`make -C ops bandwidth-demo`) — a zero-byte usage claim is now a strict loss.
+  *Known gap:* a very small claimed weight can still reach full credibility off one
+  verified byte, so a dust-weight puppet claim isn't deterred the way an honest claim
+  is (full accounting in `docs/roadmap.md`) — see
+  `docs/superpowers/specs/2026-07-25-h5-bandwidth-receipts-design.md`
 
 Still to come: H2 cycle 2 (work-identity blinding, manifest-signature and
 tier-eligibility circuits, cross-epoch unlinkability, a real randomness beacon,
-migrating the legacy demos onto real proofs), decentralised settlement, a storage
-layer (real bandwidth receipts), tier capability tokens, an epoch beacon upgrade,
-discovery v2, and security/legal hardening. Details and spec mapping in
+migrating the legacy demos onto real proofs), H5 cycle 2 (ZK bandwidth proof,
+peer-diversity proof, full P2P storage swarm, node compliance/staking, ephemeral-key
+unlinkability), decentralised settlement, tier capability tokens, an epoch beacon
+upgrade, discovery v2, and security/legal hardening. Details and spec mapping in
 [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Phase 3 — DMF
