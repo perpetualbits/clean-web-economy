@@ -238,6 +238,86 @@ contract CWERegistryTest is Test {
         registry.registerWork(workId, contentId, payees, splits, sigs, 1000, bytes32("EU"));
     }
 
+    /// @notice The clamp bounds are exactly the agreed protocol constants. The
+    ///         aggregator's expectations are calibrated against these, so a
+    ///         silent change here must fail loudly.
+    function test_bandwidthRate_boundsArePinned() public view {
+        assertEq(registry.MIN_BANDWIDTH_RATE(), 60_000);
+        assertEq(registry.MAX_BANDWIDTH_RATE(), 2_000_000_000);
+    }
+
+    /// @notice An unset work reports a zero rate, which the aggregator treats as
+    ///         fail-closed — so every pre-existing registration stays safe.
+    function test_bandwidthRate_defaultsToZero() public view {
+        assertEq(registry.bandwidthRateOf(WORK), 0);
+    }
+
+    /// @notice The registrant can set a rate inside the clamp, and it reads back.
+    function test_bandwidthRate_registrantCanSet() public {
+        (address payable[] memory payees, uint96[] memory splits) = _splitArrays();
+        bytes[] memory sigs = _defaultConsents(splits);
+        vm.prank(creator);
+        registry.registerWork(WORK, CONTENT, payees, splits, sigs, 1000, bytes32("EU"));
+
+        vm.prank(creator);
+        registry.setBandwidthRate(WORK, 960_000);
+        assertEq(registry.bandwidthRateOf(WORK), 960_000);
+    }
+
+    /// @notice Both bounds are inclusive.
+    function test_bandwidthRate_boundsAreInclusive() public {
+        (address payable[] memory payees, uint96[] memory splits) = _splitArrays();
+        bytes[] memory sigs = _defaultConsents(splits);
+        vm.prank(creator);
+        registry.registerWork(WORK, CONTENT, payees, splits, sigs, 1000, bytes32("EU"));
+
+        vm.prank(creator);
+        registry.setBandwidthRate(WORK, 60_000);
+        assertEq(registry.bandwidthRateOf(WORK), 60_000);
+
+        vm.prank(creator);
+        registry.setBandwidthRate(WORK, 2_000_000_000);
+        assertEq(registry.bandwidthRateOf(WORK), 2_000_000_000);
+    }
+
+    /// @notice A rate below the floor is refused — the floor is what stops a
+    ///         creator making their own work trivially cheap to prove.
+    function test_bandwidthRate_rejectsBelowMin() public {
+        (address payable[] memory payees, uint96[] memory splits) = _splitArrays();
+        bytes[] memory sigs = _defaultConsents(splits);
+        vm.prank(creator);
+        registry.registerWork(WORK, CONTENT, payees, splits, sigs, 1000, bytes32("EU"));
+
+        vm.prank(creator);
+        vm.expectRevert(CWERegistry.BadBandwidthRate.selector);
+        registry.setBandwidthRate(WORK, 59_999);
+    }
+
+    /// @notice A rate above the ceiling is refused, so a mistyped value cannot
+    ///         demand unmeetable evidence and burn an honest creator's earnings.
+    function test_bandwidthRate_rejectsAboveMax() public {
+        (address payable[] memory payees, uint96[] memory splits) = _splitArrays();
+        bytes[] memory sigs = _defaultConsents(splits);
+        vm.prank(creator);
+        registry.registerWork(WORK, CONTENT, payees, splits, sigs, 1000, bytes32("EU"));
+
+        vm.prank(creator);
+        vm.expectRevert(CWERegistry.BadBandwidthRate.selector);
+        registry.setBandwidthRate(WORK, 2_000_000_001);
+    }
+
+    /// @notice Only the registrant may set it.
+    function test_bandwidthRate_onlyRegistrant() public {
+        (address payable[] memory payees, uint96[] memory splits) = _splitArrays();
+        bytes[] memory sigs = _defaultConsents(splits);
+        vm.prank(creator);
+        registry.registerWork(WORK, CONTENT, payees, splits, sigs, 1000, bytes32("EU"));
+
+        vm.prank(other);
+        vm.expectRevert(CWERegistry.NotRegistrant.selector);
+        registry.setBandwidthRate(WORK, 960_000);
+    }
+
     /// Helper: EIP-191 personal-sign of the consent digest by key `k`.
     function _consent(uint256 k, bytes32 w, bytes32 c, address payee, uint96 share)
         internal view returns (bytes memory)

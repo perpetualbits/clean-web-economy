@@ -26,6 +26,7 @@ contract CWERegistry is ICWERegistry, Ownable {
         bool exists; // distinguishes a registered work from a zero-value slot
         bytes32 contentId; // identifier of the underlying content (provenance)
         uint256 registeredAt; // block timestamp of first registration (priority)
+        uint256 bandwidthRate; // bytes expected per 1e12 units of proven DAPR weight (0 = unset)
     }
 
     /// @dev workId => stored record.
@@ -34,10 +35,21 @@ contract CWERegistry is ICWERegistry, Ownable {
     /// @notice The credential registry consulted to gate work registration.
     ICWEIdentity public immutable identity;
 
+    /// @notice Lower clamp on a work's bandwidth rate, ≈ 8 kbps — an order of
+    ///         magnitude below any real medium, so no legitimate work is
+    ///         excluded, while still refusing a rate low enough to make a work
+    ///         free to prove.
+    uint256 public constant MIN_BANDWIDTH_RATE = 60_000;
+    /// @notice Upper clamp, ≈ 266 Mbps — comfortably above 4K, so a mistyped
+    ///         rate cannot silently demand unmeetable evidence.
+    uint256 public constant MAX_BANDWIDTH_RATE = 2_000_000_000;
+
     /// @notice Emitted when a work is registered for the first time.
     event WorkRegistered(bytes32 indexed workId, address indexed registrant);
     /// @notice Emitted when an existing work is updated by its registrant.
     event WorkUpdated(bytes32 indexed workId, address indexed registrant);
+    /// @notice Emitted when a work's bandwidth rate is set or changed.
+    event BandwidthRateSet(bytes32 indexed workId, uint256 rate);
 
     /// @dev Reverts when a non-verified address tries to register a work.
     error NotVerifiedCreator();
@@ -53,6 +65,8 @@ contract CWERegistry is ICWERegistry, Ownable {
     error NotRegistrant();
     /// @dev Reverts when a payee's consent signature does not recover to that payee.
     error BadConsent();
+    /// @dev Reverts when a bandwidth rate is outside [MIN_BANDWIDTH_RATE, MAX_BANDWIDTH_RATE].
+    error BadBandwidthRate();
 
     /// @param initialOwner The address that owns this registry deployment.
     /// @param identity_ The credential registry consulted for the verified-creator gate.
@@ -176,6 +190,29 @@ contract CWERegistry is ICWERegistry, Ownable {
     /// @inheritdoc ICWERegistry
     function registeredAtOf(bytes32 workId) external view returns (uint256) {
         return _works[workId].registeredAt;
+    }
+
+    /// @notice Set the bandwidth rate the settlement aggregator uses to decide
+    ///         how many bytes a usage claim on this work should be backed by.
+    /// @dev Registrant-only and clamped: the rate decides how much evidence a
+    ///      claim must carry, so leaving it unbounded would let a creator make
+    ///      their own work trivially cheap to prove. Left unset it stays 0,
+    ///      which the aggregator treats as fail-closed.
+    function setBandwidthRate(bytes32 workId, uint256 rate) external {
+        Work storage w = _works[workId];
+        // An unregistered work has a zero registrant, so this same check also
+        // rejects setting a rate on a work that does not exist.
+        if (msg.sender != w.registrant) revert NotRegistrant();
+        if (rate < MIN_BANDWIDTH_RATE || rate > MAX_BANDWIDTH_RATE) revert BadBandwidthRate();
+        w.bandwidthRate = rate;
+        emit BandwidthRateSet(workId, rate);
+    }
+
+    /// @notice The work's bandwidth rate, or 0 if never set.
+    /// @param workId The work identifier.
+    /// @return The bandwidth rate, or 0 if unset/unregistered.
+    function bandwidthRateOf(bytes32 workId) external view returns (uint256) {
+        return _works[workId].bandwidthRate;
     }
 
     /// @dev Recover the signer of `hash` from a 65-byte (r, s, v) signature.
