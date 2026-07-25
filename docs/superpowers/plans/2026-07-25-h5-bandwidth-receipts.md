@@ -652,14 +652,20 @@ Expected: FAIL — `cannot find function allocate_from_raw_with_row_credibility`
 - [ ] **Step 3: Implement the per-row core and reduce the old function to a wrapper**
 
 In `sims/src/lib.rs`, replace the whole `pub fn allocate_from_raw(...) { ... }` body
-(lines ~301–391) with the wrapper plus the new core below. Keep the existing doc comment
-on `allocate_from_raw` and append the sentence noted below.
+(lines ~301–391) with the wrapper plus the new core below.
+
+**Doc-comment handling for `allocate_from_raw`:** its existing `///` block (currently
+lines ~286–300) stays exactly as it is — do not retype or paraphrase it. Append only the
+new final paragraph shown below to the end of that existing block. The snippet's first
+two `///` lines are the existing block's opening lines, shown solely so you can see where
+the append lands; everything between them and the new paragraph is the current text,
+untouched.
 
 ```rust
 /// Compute per-work payouts (and the reputation signal) from pre-computed
 /// per-row `raw` weights and a PER-WORK bandwidth-credibility map.
 ///
-/// [... keep the existing doc comment verbatim, then append: ...]
+/// ... existing paragraphs stay here verbatim ...
 ///
 /// This is now a thin wrapper over
 /// [`allocate_from_raw_with_row_credibility`]: it expands the per-work map into
@@ -980,22 +986,16 @@ thiserror.workspace = true
 [[bin]]
 name = "cwe-storage"
 path = "src/main.rs"
-
-[[bin]]
-name = "bandwidth-client"
-path = "src/bin/bandwidth_client.rs"
 ```
+
+Task 5 adds the second `[[bin]]` for the consumer client; this task declares only the
+node, so the crate builds clean on its own with no stub files.
 
 In the root `Cargo.toml` `members`, after `"services/settlement",`:
 
 ```toml
     "services/storage",    # H5 — content-serving storage node + receipt client
 ```
-
-Note: `[[bin]] bandwidth-client` refers to a file Task 5 creates. To keep this task's
-build green on its own, create `services/storage/src/bin/bandwidth_client.rs` now with a
-placeholder `fn main() {}` carrying a `//! Implemented in Task 5.` module comment, and
-replace it wholesale in Task 5.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1468,7 +1468,8 @@ git commit -m "storage: minimal content-serving node that co-signs bandwidth rec
 ### Task 5: `bandwidth-client` — the consumer side
 
 **Files:**
-- Create (replacing the Task 4 placeholder): `services/storage/src/bin/bandwidth_client.rs`
+- Create: `services/storage/src/bin/bandwidth_client.rs`
+- Modify: `services/storage/Cargo.toml` (declare the second binary)
 - Test: exercised end-to-end by Task 7's demo; the pure logic it relies on is already
   covered by Tasks 1 and 4.
 
@@ -1489,9 +1490,19 @@ git commit -m "storage: minimal content-serving node that co-signs bandwidth rec
 - Bytes are downloaded and their length checked, but the payload itself is discarded —
   cycle 1 proves bytes *moved*, not that they were retained.
 
-- [ ] **Step 1: Write the client**
+- [ ] **Step 1: Declare the binary**
 
-Replace `services/storage/src/bin/bandwidth_client.rs` entirely:
+Append to `services/storage/Cargo.toml`:
+
+```toml
+[[bin]]
+name = "bandwidth-client"
+path = "src/bin/bandwidth_client.rs"
+```
+
+- [ ] **Step 2: Write the client**
+
+Create `services/storage/src/bin/bandwidth_client.rs`:
 
 ```rust
 //! The consumer half of the bandwidth-receipt path (H5 cycle 1).
@@ -1662,12 +1673,12 @@ async fn main() -> Result<(), BoxErr> {
 }
 ```
 
-- [ ] **Step 2: Build it**
+- [ ] **Step 3: Build it**
 
 Run: `cargo build -p cwe-storage --bin bandwidth-client`
 Expected: builds clean.
 
-- [ ] **Step 3: Smoke-test node and client together by hand**
+- [ ] **Step 4: Smoke-test node and client together by hand**
 
 ```bash
 # Serve 512 KiB of a fixture work from a scratch content dir.
@@ -1696,15 +1707,15 @@ rm -rf "$TMP"
 
 Expected: the client prints `4 receipts, 524288 bytes`, and `jq` prints `4` then `524288`.
 
-- [ ] **Step 4: Check formatting and lints**
+- [ ] **Step 5: Check formatting and lints**
 
 Run: `cargo fmt --all -- --check && cargo clippy -p cwe-storage --all-targets -- -D warnings`
 Expected: both clean.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add services/storage/src/bin/bandwidth_client.rs
+git add services/storage/Cargo.toml services/storage/src/bin/bandwidth_client.rs
 git commit -m "storage: consumer client that downloads fragments and co-signs receipts"
 ```
 
