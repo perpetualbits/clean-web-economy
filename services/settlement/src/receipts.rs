@@ -112,8 +112,13 @@ pub fn accept_receipts(
 ///   fraudster would simply publish `rate = 0` and collect in full. A
 ///   misconfiguration must cost the claimant, not the system, and it is logged
 ///   so it is loud rather than silent.
-/// * A **zero-weight row** (or one whose expectation floors to zero) is neutral:
-///   there is no claim to discount, so there is nothing to punish.
+/// * A **genuinely zero-weight row** is neutral: there is no claim to discount,
+///   so there is nothing to punish. A NONZERO row's expectation is floored at
+///   `1` byte rather than allowed to round down to zero — otherwise a
+///   dust-weight claim (too small for the integer division to register any
+///   expected bytes) would slip through as neutral while contributing nothing,
+///   inverting the fee-conservation property this module exists to protect:
+///   the optimal fraud would become "claim less", not "claim honestly."
 ///
 /// The clamp at neutral means over-serving buys no extra credit — bandwidth can
 /// only ever discount a payout.
@@ -139,11 +144,16 @@ pub fn row_credibility_ppm(
                 }
             };
 
-            let expected = mul_div_floor(row.raw, rate, RATE_SCALE);
-            // Nothing expected → nothing to discount.
-            if expected == 0 {
+            // A genuinely zero-weight row claims nothing, so there is nothing
+            // to discount.
+            if row.raw == 0 {
                 return 1_000_000;
             }
+            // Any NONZERO claim must be backed by at least one byte: floor the
+            // expectation but never to zero, or a dust-weight claim slips below
+            // the resolution of the integer division and collects full credit
+            // having moved nothing at all.
+            let expected = mul_div_floor(row.raw, rate, RATE_SCALE).max(1);
 
             let bytes = verified
                 .get(&(normalize_addr(&row.user), work))
@@ -156,14 +166,24 @@ pub fn row_credibility_ppm(
         .collect()
 }
 
-/// `floor(a · b / d)` without overflowing on large `a`.
+/// `floor(a · b / d)`, computed as `(a/d)·b + ((a%d)·b)/d` to avoid the
+/// overflow a plain `a * b` would hit when `a` is a proven weight (~2^120) and
+/// `b` a rate (~2^64).
 ///
-/// Proven weights reach ~2^120 and rates ~2^64, so a plain `a * b` would wrap.
-/// Splitting `a` into quotient and remainder against `d` keeps every
-/// intermediate product small enough: `(a/d)·b + ((a%d)·b)/d`. Saturating
-/// arithmetic on the outer add means an absurd input degrades to `u128::MAX`
-/// (an unmeetable expectation → zero credibility) rather than wrapping to a
-/// small number that would hand out free credit.
+/// This is a HELPER FOR THIS MODULE'S TWO CALL SITES, not a general-purpose
+/// `mul_div`: the identity `(a/d)·b + ((a%d)·b)/d` is only an exact floor while
+/// `(a mod d)·b < 2^128`, and both intermediate `saturating_mul`s can silently
+/// clip on arbitrary inputs where that does not hold (a bignum-reference fuzz
+/// found ~24% of unconstrained `(a, b, d)` triples computed wrong). Both
+/// current callers satisfy the precondition: the `expected` computation has
+/// `r = a % RATE_SCALE < 1e12` and `b = rate ≤ 2^64`; the `ppm` computation has
+/// `r = bytes % expected ≤ bytes` and `b = 1_000_000`. Saturating arithmetic on
+/// the outer add means an absurd (but precondition-respecting) input degrades
+/// to `u128::MAX` — for the `expected` call site specifically, that reads as an
+/// unmeetable expectation and so zero credibility, not a wrapped small number
+/// that would hand out free credit — but this degrade-to-`MAX` reading does
+/// NOT generalise to arbitrary callers; do not reuse this function outside
+/// `row_credibility_ppm` without re-deriving the precondition.
 fn mul_div_floor(a: u128, b: u128, d: u128) -> u128 {
     let q = a / d;
     let r = a % d;
@@ -392,6 +412,48 @@ mod tests {
             row_credibility_ppm(&rows, &BTreeMap::new(), &rates),
             vec![1_000_000]
         );
+    }
+
+    /// A DUST-WEIGHT (nonzero) row whose expectation would floor to zero under
+    /// plain integer division must NOT collect full credit with no evidence —
+    /// that would make "claim less weight" the optimal fraud, inverting the
+    /// whole point of this module. With a realistic rate (128 kbps audio,
+    /// `960_000` bytes per minute of full-price content) and `raw = 1_000_000`
+    /// (well under one weight-unit's worth of minutes), the naive
+    /// `floor(raw · rate / RATE_SCALE)` is `0`; the fix floors `expected` at
+    /// `1` instead, so zero verified bytes still yields zero credibility.
+    #[test]
+    fn dust_weight_row_with_no_evidence_is_not_neutral() {
+        let rows = vec![RawRow {
+            user: "0xu".into(),
+            work: work(),
+            raw: 1_000_000,
+        }];
+        let mut rates = BTreeMap::new();
+        rates.insert(work(), 960_000u64);
+        assert_eq!(
+            row_credibility_ppm(&rows, &BTreeMap::new(), &rates),
+            vec![0]
+        );
+    }
+
+    /// The same dust row WITH at least a byte of verified evidence gets
+    /// nonzero (though tiny) credibility — confirming the floor-at-1 fix
+    /// discounts a dust claim rather than banning it outright.
+    #[test]
+    fn dust_weight_row_with_some_evidence_is_discounted_not_banned() {
+        let rows = vec![RawRow {
+            user: "0xu".into(),
+            work: work(),
+            raw: 1_000_000,
+        }];
+        let mut verified = BTreeMap::new();
+        verified.insert(("0xu".to_string(), work()), 1u128);
+        let mut rates = BTreeMap::new();
+        rates.insert(work(), 960_000u64);
+        let got = row_credibility_ppm(&rows, &verified, &rates);
+        assert_eq!(got.len(), 1);
+        assert!(got[0] > 0, "a byte of evidence must earn some credibility");
     }
 
     /// Credibility is per-(user, work): one user's bytes do not credit another's

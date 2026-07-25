@@ -374,6 +374,23 @@ mod tests {
         assert_eq!(raw.unallocated, ds.unallocated);
     }
 
+    /// `settle_raw_with_row_credibility` fed an all-neutral (`1_000_000` ppm)
+    /// vector reproduces `settle_raw`'s output bit-for-bit — this is the
+    /// backwards-compatibility property the four legacy demos and the player
+    /// depend on, pinned at the settlement level rather than just the DAPR
+    /// allocation level.
+    #[test]
+    fn all_neutral_row_credibility_matches_settle_raw() {
+        let (tier_fees, rows) = hex_raw_rows();
+        let neutral = vec![1_000_000u64; rows.len()];
+        let via_row_credibility =
+            settle_raw_with_row_credibility(3, &tier_fees, &rows, &neutral, &BTreeSet::new())
+                .unwrap();
+        let via_settle_raw =
+            settle_raw(3, &tier_fees, &rows, &BTreeMap::new(), &BTreeSet::new()).unwrap();
+        assert_eq!(via_row_credibility, via_settle_raw);
+    }
+
     /// The Settlement serialises to JSON with string amounts and round-trips.
     #[test]
     fn settlement_json_round_trip() {
