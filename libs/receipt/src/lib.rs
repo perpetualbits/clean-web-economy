@@ -1,10 +1,18 @@
-//! Co-signed bandwidth receipts (H5 cycle 1).
+//! Co-signed bandwidth receipts (H5 cycle 2).
 //!
 //! A receipt is the smallest unit of evidence that content bytes actually moved:
 //! a storage node states how many bytes of a work it served to a consumer in a
 //! given epoch, and BOTH parties sign that statement. Neither side can fabricate
 //! one alone — the node will not sign bytes it did not serve, and the aggregator
 //! will not count a receipt the consumer did not counter-sign.
+//!
+//! Cycle 1 identified a receipt by *session position* — a client-chosen session
+//! nonce plus a client-chosen chunk counter. That let a consumer re-request the
+//! exact same bytes under a fresh nonce and mint unlimited fresh evidence for
+//! content it already held. Cycle 2 identifies a receipt by *content position*
+//! instead — which `CHUNK_SIZE` block of the work's bytes this is — so the total
+//! evidence a consumer can accumulate for a work is capped at the work's actual
+//! size, no matter how many requests are issued.
 //!
 //! This crate is deliberately portable: it defines the tuple, its canonical
 //! signable bytes, signature recovery, and the anti-replay dedup key, but does no
@@ -15,8 +23,20 @@ use alloy::primitives::Address;
 use alloy::primitives::Signature;
 use serde::{Deserialize, Serialize};
 
-/// One co-signable statement that `bytes` of `work_id` moved from `node` to
-/// `consumer` during `epoch`.
+/// The fixed content-block size a receipt attests, in bytes.
+///
+/// Content is addressed as a sequence of `CHUNK_SIZE` blocks (the final block of
+/// a work is short). Node, client and aggregator all use this one constant — a
+/// disagreement would make honest receipts undeduplicatable.
+pub const CHUNK_SIZE: u64 = 131_072;
+
+/// One co-signable statement that a specific BLOCK of `work_id`'s content was
+/// delivered from `node` to `consumer` during `epoch`.
+///
+/// The receipt identifies content position (`chunk_index`), not session
+/// position. That is what bounds the evidence a consumer can accumulate: each
+/// block of a work counts once, so total credit for a (consumer, work) pair is
+/// capped at the work's size however many requests are issued.
 ///
 /// Addresses and 32-byte ids are lowercase `0x`-prefixed hex strings, matching
 /// the key form `cwe_dapr::RawRow` uses for `user` and `work` — that is what lets
@@ -31,15 +51,13 @@ pub struct Receipt {
     /// The serving storage node; must hold a valid storage-node credential for
     /// this receipt to count.
     pub node: String,
-    /// Bytes served, as agreed by both parties.
+    /// Which `CHUNK_SIZE` block of the work's content this attests.
+    pub chunk_index: u64,
+    /// Bytes actually delivered for that block. Equals `CHUNK_SIZE` except for a
+    /// work's final, short block.
     pub bytes: u64,
     /// The settlement epoch this receipt belongs to.
     pub epoch: u64,
-    /// Per consumer-node session nonce, as a lowercase `0x` 32-byte hex string.
-    pub session_nonce: String,
-    /// Per-chunk counter within a session; with `session_nonce` and `node` it
-    /// forms the anti-replay key.
-    pub chunk_nonce: u64,
 }
 
 impl Receipt {
@@ -65,17 +83,26 @@ impl Receipt {
             .map_err(|e| ReceiptError::Recover(e.to_string()))
     }
 
-    /// The anti-replay key `(node, session_nonce, chunk_nonce)`.
+    /// The byte offset into the work's content at which this chunk begins.
+    pub fn offset(&self) -> u64 {
+        // Saturating so a corrupt/adversarial chunk_index cannot overflow u64;
+        // an out-of-range offset is rejected downstream against the work's
+        // actual size rather than wrapping here.
+        self.chunk_index.saturating_mul(CHUNK_SIZE)
+    }
+
+    /// The credit-dedup key `(consumer, work_id, chunk_index)`.
     ///
-    /// The aggregator drops any receipt whose key it has already counted this
-    /// epoch, which kills both duplicate submission and replay of an old
-    /// receipt. The key deliberately excludes `bytes` so that re-submitting the
-    /// same chunk with an inflated byte count still collides.
+    /// Each distinct block of a work earns credit once per consumer per epoch.
+    /// The node is deliberately NOT part of the key: two nodes serving the same
+    /// block to the same consumer moved the same content, and crediting both
+    /// would double-count it. `bytes` is excluded so a replay claiming a larger
+    /// count still collides.
     pub fn dedup_key(&self) -> (String, String, u64) {
         (
-            normalize_addr(&self.node),
-            self.session_nonce.to_ascii_lowercase(),
-            self.chunk_nonce,
+            normalize_addr(&self.consumer),
+            self.work_id.to_ascii_lowercase(),
+            self.chunk_index,
         )
     }
 }
@@ -200,10 +227,9 @@ mod tests {
             work_id: format!("0x{}", "aa".repeat(32)),
             consumer: consumer.to_string(),
             node: node.to_string(),
-            bytes: 524_288,
+            chunk_index: 3,
+            bytes: 131_072,
             epoch: 7,
-            session_nonce: format!("0x{}", "5c".repeat(32)),
-            chunk_nonce: 3,
         }
     }
 
@@ -356,18 +382,44 @@ mod tests {
         assert!(signed.verify().is_err());
     }
 
-    /// The dedup key is (node, session_nonce, chunk_nonce): two receipts from
-    /// the same node/session/chunk collide, a different chunk does not.
+    /// The dedup key is (consumer, work_id, chunk_index) — content position,
+    /// not session position. Two receipts for the same chunk of the same work
+    /// to the same consumer collide even when a DIFFERENT node served them,
+    /// because it is the same content either way. (Cycle 1 keyed on the node
+    /// and double-counted this case.)
     #[test]
-    fn dedup_key_identifies_a_replay() {
-        let a = sample("0xaa", "0xbb");
-        let mut b = a.clone();
+    fn dedup_key_is_content_position_not_node() {
+        let a = sample("0xc0ffee", "0xnode1");
+        let mut b = sample("0xc0ffee", "0xnode2");
         b.bytes = 1; // a replay may differ in payload; the key must still collide
         assert_eq!(a.dedup_key(), b.dedup_key());
 
+        // A different chunk of the same work is genuinely distinct evidence.
         let mut c = a.clone();
-        c.chunk_nonce += 1;
+        c.chunk_index += 1;
         assert_ne!(a.dedup_key(), c.dedup_key());
+
+        // So is the same chunk delivered to a different consumer.
+        let d = sample("0xdecaf", "0xnode1");
+        assert_ne!(a.dedup_key(), d.dedup_key());
+    }
+
+    /// The dedup key normalises case, so a mixed-case receipt cannot evade it.
+    #[test]
+    fn dedup_key_normalises_case() {
+        let a = sample("0xc0ffee", "0xnode1");
+        let b = sample("0xC0FFEE", "0xNODE1");
+        assert_eq!(a.dedup_key(), b.dedup_key());
+    }
+
+    /// A chunk index maps to its byte offset in the content.
+    #[test]
+    fn offset_follows_chunk_index() {
+        let mut r = sample("0xc0ffee", "0xnode1");
+        r.chunk_index = 0;
+        assert_eq!(r.offset(), 0);
+        r.chunk_index = 5;
+        assert_eq!(r.offset(), 5 * CHUNK_SIZE);
     }
 
     /// Addresses are normalised to lowercase so receipts join to DAPR row keys.
