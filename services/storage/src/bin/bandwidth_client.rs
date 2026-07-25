@@ -144,6 +144,52 @@ async fn main() -> Result<(), BoxErr> {
             )
             .into());
         }
+        // Check the receipt actually describes what we asked for. The node's
+        // epoch comes from its OWN `EPOCH` environment variable, independent of
+        // ours — if an operator restarts the node a stale epoch behind, nothing
+        // above would notice: the signature is valid and the byte count matches.
+        // We would counter-sign and write a bundle that looks fine, then
+        // settlement would drop every one of these receipts for epoch mismatch,
+        // `row_credibility_ppm` would return 0, and our WHOLE tier fee would be
+        // burned with nothing failing loudly until then. The same silent-forfeit
+        // risk applies to work_id, consumer, session_nonce and chunk_nonce: any
+        // mismatch there means we would be signing a receipt for someone else's
+        // request, which the aggregator will never join to our usage row either.
+        if resp.receipt.epoch != epoch {
+            return Err(format!(
+                "chunk {chunk}: node attested epoch {} but we requested epoch {epoch}",
+                resp.receipt.epoch
+            )
+            .into());
+        }
+        if resp.receipt.work_id != work_id {
+            return Err(format!(
+                "chunk {chunk}: node attested work {} but we requested {work_id}",
+                resp.receipt.work_id
+            )
+            .into());
+        }
+        if !resp.receipt.consumer.eq_ignore_ascii_case(&consumer) {
+            return Err(format!(
+                "chunk {chunk}: node attested consumer {} but we are {consumer}",
+                resp.receipt.consumer
+            )
+            .into());
+        }
+        if !resp.receipt.session_nonce.eq_ignore_ascii_case(&session) {
+            return Err(format!(
+                "chunk {chunk}: node attested session {} but we requested session {session}",
+                resp.receipt.session_nonce
+            )
+            .into());
+        }
+        if resp.receipt.chunk_nonce != chunk {
+            return Err(format!(
+                "chunk {chunk}: node attested chunk_nonce {} but we requested {chunk}",
+                resp.receipt.chunk_nonce
+            )
+            .into());
+        }
 
         // 4. Counter-sign the identical canonical bytes.
         let msg = resp.receipt.canonical_bytes()?;

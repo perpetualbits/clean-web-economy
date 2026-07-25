@@ -60,7 +60,7 @@ cleanup() {
   rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
-for _ in $(seq 1 80); do cast block-number --rpc-url $RPC >/dev/null 2>&1 && break; done
+for _ in $(seq 1 80); do cast block-number --rpc-url $RPC >/dev/null 2>&1 && break; sleep 0.1; done
 
 # Anvil's deterministic dev keys.
 mapfile -t KEYS < <(grep -oE '0x[0-9a-f]{64}' "$WORKDIR/anvil.log" | head -10)
@@ -155,8 +155,8 @@ GOOD_NODE_PID=$!
 CONTENT_DIR=$CONTENT PRIVATE_KEY=$ROGUE_NODE_KEY EPOCH=$EPOCH PORT=8547 \
   "$STORAGE" > "$WORKDIR/node-rogue.log" 2>&1 &
 ROGUE_NODE_PID=$!
-for _ in $(seq 1 100); do curl -sf http://127.0.0.1:8546/health >/dev/null 2>&1 && break; done
-for _ in $(seq 1 100); do curl -sf http://127.0.0.1:8547/health >/dev/null 2>&1 && break; done
+for _ in $(seq 1 100); do curl -sf http://127.0.0.1:8546/health >/dev/null 2>&1 && break; sleep 0.1; done
+for _ in $(seq 1 100); do curl -sf http://127.0.0.1:8547/health >/dev/null 2>&1 && break; sleep 0.1; done
 
 cd "$ROOT"   # zk_submit/settlement resolve chain/zk/*.bin from the repo root
 

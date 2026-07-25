@@ -347,8 +347,8 @@ jobs:
 
       # `jq` builds the rates file and reads the settlement's proof output;
       # `curl` waits for the storage nodes to come up.
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install jq and curl
+        run: sudo apt-get update && sudo apt-get install -y jq curl
 
       - name: Run the demo
         run: make -C ops bandwidth-demo
