@@ -142,14 +142,26 @@ pub fn normalize_addr(s: &str) -> String {
 }
 
 /// Decode a lowercase-or-uppercase hex string into bytes, returning `None` on any
-/// malformed input (odd length or a non-hex digit).
+/// malformed input (odd length, a non-hex digit, or non-ASCII/multi-byte UTF-8).
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    // Work over the raw bytes rather than `str` slicing: byte-range slices never
+    // panic on a char boundary, whereas `&s[i..i+2]` does whenever a multi-byte
+    // UTF-8 character straddles that offset. Attacker-controlled input (an
+    // unverified signature string) must return `None` here, never panic.
+    let bytes = s.as_bytes();
+    if !bytes.len().is_multiple_of(2) {
         return None;
     }
-    (0..s.len())
+    (0..bytes.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .map(|i| {
+            // Re-validate as UTF-8 before parsing so a stray multi-byte
+            // character (which is not valid ASCII hex anyway) yields `None`
+            // instead of `from_str_radix` ever seeing an invalid `str`.
+            std::str::from_utf8(&bytes[i..i + 2])
+                .ok()
+                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+        })
         .collect()
 }
 
@@ -279,6 +291,68 @@ mod tests {
         );
         let mut signed = co_sign(r, &node, &consumer);
         signed.consumer_sig = String::new();
+        assert!(signed.verify().is_err());
+    }
+
+    /// A signature string containing a multi-byte UTF-8 character at an odd
+    /// byte offset must not panic `decode_hex`'s byte-slicing — it must be
+    /// rejected as a bad signature like any other malformed input.
+    #[test]
+    fn non_ascii_signature_fails_without_panic() {
+        let node = PrivateKeySigner::random();
+        let consumer = PrivateKeySigner::random();
+        let r = sample(
+            &format!("{:#x}", consumer.address()),
+            &format!("{:#x}", node.address()),
+        );
+        let mut signed = co_sign(r, &node, &consumer);
+        // "a" (1 byte) + "€" (3 bytes) = 4 bytes total, an even byte length
+        // with a multi-byte character straddling the 2-byte decode window.
+        signed.node_sig = "0xa\u{20AC}".to_string();
+        assert!(signed.verify().is_err());
+    }
+
+    /// Valid hex of the wrong length (64 bytes where a 65-byte `r||s||v`
+    /// signature is required) is rejected, not accepted or panicked on.
+    #[test]
+    fn wrong_length_hex_signature_fails() {
+        let node = PrivateKeySigner::random();
+        let consumer = PrivateKeySigner::random();
+        let r = sample(
+            &format!("{:#x}", consumer.address()),
+            &format!("{:#x}", node.address()),
+        );
+        let mut signed = co_sign(r, &node, &consumer);
+        signed.node_sig = format!("0x{}", "ab".repeat(64)); // 64 bytes, not 65
+        assert!(signed.verify().is_err());
+    }
+
+    /// An odd-length hex string is rejected by the byte-length guard.
+    #[test]
+    fn odd_length_signature_fails() {
+        let node = PrivateKeySigner::random();
+        let consumer = PrivateKeySigner::random();
+        let r = sample(
+            &format!("{:#x}", consumer.address()),
+            &format!("{:#x}", node.address()),
+        );
+        let mut signed = co_sign(r, &node, &consumer);
+        signed.node_sig = "0xabc".to_string(); // 3 hex chars, odd
+        assert!(signed.verify().is_err());
+    }
+
+    /// A signature of the correct length (65 bytes / 130 hex chars) but with
+    /// non-hex characters is rejected rather than mis-parsed.
+    #[test]
+    fn non_hex_characters_signature_fails() {
+        let node = PrivateKeySigner::random();
+        let consumer = PrivateKeySigner::random();
+        let r = sample(
+            &format!("{:#x}", consumer.address()),
+            &format!("{:#x}", node.address()),
+        );
+        let mut signed = co_sign(r, &node, &consumer);
+        signed.node_sig = format!("0x{}", "zz".repeat(65)); // right length, no hex digits
         assert!(signed.verify().is_err());
     }
 
