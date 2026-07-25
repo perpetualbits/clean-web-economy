@@ -1,8 +1,8 @@
 # H5 — Storage layer + real bandwidth receipts (cycle 1): design
 
 **Date:** 2026-07-25
-**Status:** Design. Sections A–B approved live in brainstorming; Sections C–D drafted
-from the same decisions and pending user review.
+**Status:** Approved. Sections A–B approved live in brainstorming; Sections C–D and the
+§9 open questions approved in review on 2026-07-25.
 **Governing specs:** `docs/specs/anti-fraud_and_bandwidth_receipt_protocol.md` (AFBRP),
 `docs/specs/client-storage_handshake_specification.md`,
 `docs/specs/storage_node_policy_and_compliance_specification.md`
@@ -60,6 +60,10 @@ compute a **real per-(user, work) bandwidth-credibility** that feeds DAPR — so
 | D3 | Trust anchor | Storage nodes hold a **CWEIdentity "storage-node" credential** (reuse H6's issuer set); aggregator counts only credentialed nodes. Staking/ephemeral-keys deferred |
 | D4 | Privacy boundary | Integrity-first: aggregator sees per-(user,work) bytes + work_id (like H2 cycle-1 revealed work_id). ZK hiding deferred |
 | D5 | Expected-bytes basis | `weight × RATE(W)` — because H2 made minutes/plays private, "expected" derives from the proven weight, not raw minutes |
+| D6 | `RATE(W)` sourcing | **Aggregator deploy config** (a rates map alongside `DEPLOYMENTS`). Must not be settable by the payout beneficiary — see §4.1. Manifest/registry sourcing (with a protocol floor) is the deferred graduation |
+| D7 | `bandwidth-demo` usage path | **Event mode** (real Groth16 proofs, reusing the H2 `zk-demo` machinery), accepting the ~5 s proving cost, so the demo exercises the live proven-weight path |
+| D8 | Consumer receipt key | The consumer's **wallet key** — event-mode rows are keyed by the submitter address (`chain.rs`), so wallet-signed receipts join directly to the right DAPR row. No separate key |
+| D9 | `cwe-storage` transport | Plain HTTP. The real P2P swarm is deferred |
 
 ---
 
@@ -147,9 +151,31 @@ credibility_ppm(U,W) = clamp( verified_bytes(U,W) × 1e6 / expected_bytes(U,W), 
 - Padder inflating their own weight on a real work: bytes don't scale with the padded
   weight → ratio < 1 → discounted, and only *their* row.
 - Deterministic integer math (`mul_div`, saturating clamp); no floating point.
-- `RATE(W)` is a public per-work constant published in the work's signed manifest
-  (discovery-hub) or a registry field; for the demo it may come from the deployment
-  config. It is not privacy-sensitive (it's a property of the content, not the user).
+- `RATE(W)` is a public per-work constant. It is not privacy-sensitive (it's a property
+  of the content, not the user), but it **is** security-sensitive — see §4.1.
+
+### 4.1 `RATE(W)` is security-critical (fail closed, not open)
+
+The `expected == 0 → neutral 1e6` rule above is a **fail-open**: whoever sets `RATE(W)`
+can switch off the discount for that work entirely by setting it to `0`. If `RATE` came
+from the work's own signed manifest, a puppet-work fraudster — who *is* the creator of
+their puppet work — would publish `RATE = 0` and sail through §7.1 scenario 2 at full
+credit, silently defeating the cycle's whole point.
+
+Two rules follow, and both are requirements, not nice-to-haves:
+
+1. **`RATE(W)` comes from the aggregator's deploy config** (D6) — a source the payout
+   beneficiary does not control. It is never read from the receipts bundle (which the
+   consumer writes) or from creator-signed data this cycle.
+2. **A missing or zero `RATE(W)` fails closed:** a work with no configured rate, or a
+   configured rate of `0`, is treated as *unknown expectation* → its rows get
+   **credibility `0`** (strict loss), not neutral `1e6`. The neutral-on-`expected == 0`
+   path in §4 applies only to a genuinely zero *weight* row, where there is nothing to
+   discount. Settlement logs the work id when it drops a row this way, so a
+   misconfiguration is loud rather than a silent free pass.
+
+When `RATE` graduates to a manifest or registry field in a later cycle, it needs a
+protocol-level floor (or a chain-anchored value) for the same reason.
 
 ---
 
@@ -177,7 +203,11 @@ Extend `cwe_dapr` without changing existing per-work callers:
   epoch), sum verified bytes per (user, work), compute per-row `credibility_ppm` (§4), and
   call `allocate_from_raw_with_row_credibility`. If absent → neutral (current behavior).
 - **Disclosure mode / legacy demos:** no receipts bundle → neutral bandwidth, unchanged.
-- `RATE(W)` obtained per work from the manifest/registry (MVP: config/bundle metadata).
+- `RATE(W)` is read from an aggregator-side rates config (optional `RATES` env → a
+  `{work_id: bytes_per_weight}` map, loaded next to `DEPLOYMENTS`). Never from the
+  receipts bundle. A work missing from the map, or mapped to `0`, fails closed per §4.1.
+  Absent the whole receipts bundle, bandwidth stays neutral and the rates map is unused —
+  so the legacy demos are untouched.
 
 ---
 
@@ -203,7 +233,9 @@ Self-contained Anvil + a running `cwe-storage` node. Three points:
   `allocate_from_raw` bit-for-bit; a zero-credibility row burns its share (strict loss);
   a fractional credibility discounts proportionally.
 - Settlement: receipts drive per-row credibility; an uncredentialed/invalid/replayed
-  receipt is dropped; `RATE`/expected-bytes edge cases (expected 0 → neutral).
+  receipt is dropped; `RATE`/expected-bytes edge cases — a zero-*weight* row is neutral,
+  but a work with a missing or zero configured `RATE` **fails closed to credibility 0**
+  (§4.1), and `RATE` is never taken from the bundle.
 
 ### 7.3 Full gate stays green
 `cargo fmt/clippy/test`, `forge test`, and the now-**nine** `make …-demo`s (adding
@@ -220,12 +252,19 @@ compliance/staking, ephemeral-key unlinkability); update the "What is real vs st
 
 ---
 
-## 9. Open questions for review (Sections C–D not yet interactively approved)
-- **`RATE(W)` sourcing:** manifest field vs registry field vs deploy config for the MVP.
-- **Demo usage path:** event mode (real proofs, full-stack, heavier) vs disclosure mode
-  (simpler, no proving) for the usage half of `bandwidth-demo`. Recommendation: event mode
-  for a true "live on the real system" demo, accepting the ~5s proving cost.
-- **Consumer key:** the consumer signs receipts with its wallet key (same address as its
-  usage submission) so bytes attribute to the right user. Confirm no separate key needed.
-- **`cwe-storage` transport:** plain HTTP (recommended, pragmatic) — the real P2P swarm is
-  deferred.
+## 9. Review outcome (2026-07-25)
+
+All four questions raised for review are resolved; the decisions are recorded as D6–D9
+in §1.3 and folded into §§4, 4.1, 6 and 7.
+
+| Question | Resolution |
+|---|---|
+| `RATE(W)` sourcing | Aggregator deploy config (D6). Manifest/registry sourcing deferred, and only with a protocol floor — see §4.1 |
+| `bandwidth-demo` usage path | Event mode, real proofs (D7) |
+| Consumer receipt key | The wallet key; verified to match how event mode keys rows (D8) |
+| `cwe-storage` transport | Plain HTTP (D9) |
+
+The review also found a fail-open in the original §4 credibility math — a zero `RATE(W)`
+neutralises the discount, which a puppet-work creator could have exploited had `RATE`
+come from creator-signed data. §4.1 now makes the rate source beneficiary-independent
+and makes a missing/zero rate fail closed.
