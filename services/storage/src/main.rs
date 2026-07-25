@@ -1,5 +1,5 @@
 //! The `cwe-storage` node: serves content fragments over HTTP and co-signs a
-//! bandwidth receipt for each fragment it actually delivered.
+//! bandwidth receipt for each fragment it actually served.
 //!
 //! Cycle 1 is deliberately a single plain-HTTP node, not a swarm: the point is to
 //! make real bytes move and to produce evidence the aggregator can verify, not to
@@ -154,7 +154,8 @@ async fn content(
 
     // Record what we are about to hand over, keyed exactly as a later receipt
     // request will ask for it. This is bytes read, not bytes confirmed
-    // delivered; the consumer's counter-signature is what turns it into proof.
+    // delivered; the consumer's counter-signature binds them to the count, but
+    // does not prove delivery—see the crate-level docs for why.
     state.ledger.write().await.record(
         &q.session,
         q.chunk,
