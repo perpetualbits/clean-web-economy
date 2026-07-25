@@ -32,9 +32,17 @@ Read it before Task 1. Decisions E1–E6 and §2 (why the three changes compose)
   ppm values live in `[0, 1_000_000]`.
 - **`sims` (`cwe-dapr`) must not be modified.** The epoch factor is applied in settlement.
   If a task seems to need a DAPR change, stop and report — the design says it does not.
-- **The full gate must stay green:** `cargo fmt --all -- --check`,
+- **The full gate must be green at the END of the branch:** `cargo fmt --all -- --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
   `(cd chain && forge test)`. Do **not** run `forge fmt`.
+- **Expected red window — Tasks 1 through 6.** Task 1 changes the `Receipt` struct, which
+  is a breaking change for `cwe-storage` and `cwe-settlement`. Those crates do not compile
+  again until Task 2 and Task 6 respectively. This is inherent to a breaking type change
+  and is **not** a defect: implementers and reviewers for Tasks 1-5 must verify with
+  **per-crate** commands (`cargo test -p <crate>`, `cargo clippy -p <crate> --all-targets
+  -- -D warnings`) and must **not** treat a workspace-wide build failure in an untouched
+  downstream crate as a finding. `cargo fmt --all -- --check` works throughout and stays
+  required. From Task 6 onward the full workspace gate applies again and must pass.
 - **Never kill a process you did not start.** Capture exact PIDs (`cmd & PID=$!`) and kill
   only those. No `pkill`/`killall`/pattern kills — one previously killed a user's browser.
 - Foundry lives at `$HOME/.foundry/bin`; prepend it to `PATH`.
