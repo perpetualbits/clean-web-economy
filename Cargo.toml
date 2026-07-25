@@ -25,6 +25,7 @@ members = [
     "libs/zk-circuits",   # H2 — zero-knowledge usage-proof circuits
     "sims",               # WP2 — DAPR payout-math reference crate
     "services/settlement",  # WP5 — off-chain epoch settlement job
+    "services/storage",    # H5 — content-serving storage node + receipt client
     "services/discovery-hub", # Phase 2 — Discovery Hub service
     "clients/player-plugin",  # Phase 2.2 — desktop player agent
 ]

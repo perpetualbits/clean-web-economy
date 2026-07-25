@@ -1,0 +1,26 @@
+# H5 — a minimal storage node: serves real content bytes and co-signs the
+# bandwidth receipts that prove they moved.
+[package]
+name = "cwe-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Minimal content-serving storage node for the Clean Web Economy"
+
+[dependencies]
+cwe-receipt = { path = "../../libs/receipt" }
+alloy = { version = "2", features = ["full"] }
+axum = "0.8"
+# `sync` is declared explicitly because the node holds its served-chunk ledger
+# behind a tokio::sync::RwLock.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
+# The consumer client speaks HTTP to the node; rustls avoids a system OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[[bin]]
+name = "cwe-storage"
+path = "src/main.rs"

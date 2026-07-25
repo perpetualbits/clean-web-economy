@@ -1881,6 +1881,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwe-storage"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "axum",
+ "cwe-receipt",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "cwe-wallet-zk"
 version = "0.1.0"
 dependencies = [
@@ -2656,6 +2670,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -3829,6 +3844,8 @@ dependencies = [
  "native-tls",
  "percent-encoding",
  "pin-project-lite",
+ "quinn",
+ "rustls",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -3836,6 +3853,7 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-native-tls",
+ "tokio-rustls",
  "tower",
  "tower-http",
  "tower-service",
@@ -3843,6 +3861,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "webpki-roots 1.0.9",
 ]
 
 [[package]]
@@ -4016,6 +4035,7 @@ checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
