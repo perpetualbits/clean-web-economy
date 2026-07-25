@@ -12,14 +12,16 @@ description = "Minimal content-serving storage node for the Clean Web Economy"
 cwe-receipt = { path = "../../libs/receipt" }
 alloy = { version = "2", features = ["full"] }
 axum = "0.8"
-# `sync` is declared explicitly because the node holds its served-chunk ledger
-# behind a tokio::sync::RwLock.
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
 # The consumer client speaks HTTP to the node; rustls avoids a system OpenSSL.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The delivery stream credits a chunk only once fully yielded, so it needs the
+# Stream trait and the Bytes buffer axum's streaming body is built from.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+bytes = "1"
 
 [[bin]]
 name = "cwe-storage"

@@ -1,44 +1,34 @@
-//! The `cwe-storage` node: serves content fragments over HTTP and co-signs a
-//! bandwidth receipt for each fragment it actually served.
+//! The `cwe-storage` node: serves content chunks over HTTP and co-signs a
+//! bandwidth receipt for each chunk it actually delivered in full.
 //!
-//! Cycle 1 is deliberately a single plain-HTTP node, not a swarm: the point is to
-//! make real bytes move and to produce evidence the aggregator can verify, not to
-//! build content distribution. Peer discovery, redundancy, proof-of-storage and
-//! the rest live in the deferred storage-swarm cycle.
+//! Cycle 2 is still deliberately a single plain-HTTP node, not a swarm: the
+//! point is to make real bytes move and to produce evidence the aggregator can
+//! verify, not to build content distribution. Peer discovery, redundancy,
+//! proof-of-storage and the rest live in the deferred storage-swarm cycle.
 //!
-//! One boundary worth naming: the ledger this node signs from records bytes
-//! *read from disk and handed to the response writer*, not bytes confirmed to
-//! have reached the consumer's socket — a plain HTTP handler has no hook to
-//! observe the latter — and the receipt itself binds no byte range at all,
-//! only a total count. The node's signature proves exactly one thing: that
-//! THIS node's own ledger holds that count for that session/chunk. It never
-//! signs a caller-supplied number.
+//! One boundary worth naming precisely: the ledger this node signs from records
+//! bytes *fully handed to the transport* — every slice of the chunk has left
+//! this process for the client's socket — not bytes confirmed to have been
+//! read by the client application. A plain HTTP server has no hook to observe
+//! the latter, so "the node attests delivery to the transport" is the
+//! strongest claim it can make honestly, and it is what the
+//! [`cwe_storage::DeliveryStream`] completion callback below records.
 //!
-//! That is NOT the same as proof of delivery, and the consumer's
-//! counter-signature does not close the gap the way it might seem to. The
-//! consumer is the receipt's sole beneficiary, so a modified client has every
-//! incentive to counter-sign a count it knows is inflated, not to withhold its
-//! signature — the `bytes != body.len()` check in `bandwidth_client.rs`
-//! protects an HONEST consumer from a LYING node, and cannot constrain a
-//! malicious consumer, because it runs inside attacker-controlled software.
-//! Concretely: a modified client can issue `GET /content/...` requests, never
-//! read the response body, and still be issued a signed receipt for the full
-//! byte count, because the ledger entry is written inside the `content`
-//! handler before axum flushes anything (see below). Because the anti-replay
-//! key — `(node, session_nonce, chunk_nonce)` — is entirely client-chosen, the
-//! same byte window re-requested under a fresh chunk nonce produces a fresh,
-//! non-colliding receipt, so this can be repeated to accumulate many times a
-//! file's real size in "verified bytes". This is a known, deferred limitation
-//! (see the deferred list in the H5 design doc), not something this code
-//! prevents.
+//! That is deliberately NOT the same claim cycle 1 made. Cycle 1's ledger entry
+//! was written the moment bytes were read off disk, before anything was sent —
+//! a client could request a chunk, never read the response body, and still
+//! receive a signed receipt for the full count. This cycle closes that: the
+//! entry is written by the stream's completion callback, which fires only when
+//! the whole chunk has been yielded, so an abandoned transfer credits nothing
+//! and the node has no receipt to sign for it (see `content` below).
 //!
-//! It is a *deterrent* gap, not a money-extraction one: the DAPR payout target
-//! is scale-invariant (H3), so an inflated count still only ever recovers the
-//! claimant's OWN tier fee — the "extract ≤ pay-in" cap holds regardless — and
-//! the target work's content must still be genuinely hosted on a credentialed
-//! node. The eventual fix is to bind `offset`/`len` into the receipt, dedup by
-//! byte RANGE per (user, work) rather than by chunk nonce, and write the
-//! ledger entry only after the response body has actually been written.
+//! The receipt still binds no byte RANGE, only a chunk index and a total count,
+//! but the anti-replay key is now content position — `(consumer, work_id,
+//! chunk_index)` — rather than a client-chosen session/chunk nonce. That is
+//! what stops a consumer minting unlimited fresh evidence for the same bytes:
+//! re-requesting a chunk overwrites the same ledger entry and the aggregator
+//! dedups on the identical key, so total credit for a work is capped at the
+//! work's real size no matter how many requests are issued.
 //!
 //! Configuration (environment):
 //! * `CONTENT_DIR` — directory holding `<work_id>.bin` files (required)
@@ -58,12 +48,11 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cwe_receipt::{normalize_addr, Receipt};
-use cwe_storage::{fragment, issue_receipt, Ledger, ServedChunk};
+use cwe_storage::{fragment_for_chunk, issue_receipt, DeliveryStream, Ledger, ServedChunk};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 
 /// Everything the handlers share: the node's identity, its content directory,
-/// the epoch it is serving, and the ledger of what it has served.
+/// the epoch it is serving, and the ledger of what it has fully delivered.
 struct NodeState {
     /// The node's signing key; also the source of its address.
     signer: PrivateKeySigner,
@@ -71,32 +60,31 @@ struct NodeState {
     content_dir: PathBuf,
     /// The settlement epoch every issued receipt is bound to.
     epoch: u64,
-    /// What has been served so far, guarded for concurrent requests.
-    ledger: RwLock<Ledger>,
+    /// What has been fully delivered so far. A blocking mutex rather than an
+    /// async one: the delivery stream's completion callback fires inside
+    /// `poll_next`, which cannot `.await`, and every ledger operation is a short
+    /// map write.
+    ledger: std::sync::Mutex<Ledger>,
 }
 
 /// Query parameters of `GET /content/{work_id}`.
 #[derive(Debug, Deserialize)]
 struct ContentQuery {
-    /// The address the bytes are being served to; bound into the receipt.
+    /// The address the bytes are being delivered to; bound into the receipt.
     consumer: String,
-    /// The consumer-chosen per-session nonce.
-    session: String,
-    /// The chunk counter within the session.
-    chunk: u64,
-    /// Byte offset into the work's content.
-    offset: u64,
-    /// How many bytes to serve from `offset`.
-    len: u64,
+    /// Which `CHUNK_SIZE` block of the work's content to deliver.
+    chunk_index: u64,
 }
 
-/// Body of `POST /receipt`: which served chunk to attest.
+/// Body of `POST /receipt`: which delivered chunk to attest.
 #[derive(Debug, Deserialize)]
 struct ReceiptRequest {
-    /// The session the chunk was served under.
-    session_nonce: String,
-    /// The chunk counter within that session.
-    chunk_nonce: u64,
+    /// The work the chunk belongs to.
+    work_id: String,
+    /// Which block of that work.
+    chunk_index: u64,
+    /// The consumer the chunk was delivered to.
+    consumer: String,
 }
 
 /// Response of `POST /receipt`: the node's statement and its signature over it.
@@ -113,86 +101,86 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// Serve a fragment of a work's content and record what was handed to the
-/// response writer for it.
+/// Deliver one content chunk, crediting it only once it has been delivered
+/// in full.
 ///
-/// The recorded byte count is the length of the fragment actually read off
-/// disk — not what the caller asked for — so a clamped or short read attests
-/// only the bytes that were really available, never an inflated request size.
+/// The ledger entry is written by the delivery stream's completion callback,
+/// not here — so a client that abandons the transfer part-way leaves no record
+/// and can obtain no receipt for this chunk. Retrying the same index is safe:
+/// the ledger overwrites, and the aggregator dedups on content position.
 ///
-/// What it is NOT: proof of delivery. This count is taken the moment the bytes
-/// are handed to axum's response writer — and the ledger entry below is
-/// written here in the handler, BEFORE axum flushes any of it to the
-/// consumer's socket. If the connection drops mid-transfer, or the caller
-/// never reads the response body at all, the ledger still holds the full
-/// count. A plain HTTP handler has no hook to observe the client actually
-/// receiving the bytes, so establishing that the transfer completed is
-/// deliberately not this function's job.
-///
-/// Nor does the consumer's counter-signature close that gap on its own: the
-/// consumer is the sole beneficiary of an inflated count, so a modified
-/// client has every reason to counter-sign a number it knows is wrong, not to
-/// refuse. Combined with the receipt binding no byte range and the
-/// anti-replay key (`node`, `session_nonce`, `chunk_nonce`) being entirely
-/// client-chosen, a modified client can call this endpoint repeatedly under
-/// fresh chunk nonces, discard the body every time, and accumulate signed
-/// receipts for many times the file's real size. See the crate-level docs
-/// above for the full argument, why it is a deterrent gap rather than a
-/// money-extraction one, and why it is a known, deferred limitation rather
-/// than something this handler guards against.
+/// The credited count is what left the server for the client's transport. It is
+/// not, and cannot over HTTP be, a claim about what the client application did
+/// with the bytes — see the crate docs for why that distinction does not matter
+/// for a bandwidth measure.
 async fn content(
     State(state): State<Arc<NodeState>>,
     AxumPath(work_id): AxumPath<String>,
     Query(q): Query<ContentQuery>,
 ) -> impl IntoResponse {
-    let bytes = match fragment(&state.content_dir, &work_id, q.offset, q.len) {
+    let bytes = match fragment_for_chunk(&state.content_dir, &work_id, q.chunk_index) {
         Ok(b) => b,
         // A bad id or unreadable content is a client-visible 404; the node
         // simply has nothing to serve under that name.
         Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     };
 
-    // Record what we are about to hand over, keyed exactly as a later receipt
-    // request will ask for it. This is bytes read, not bytes confirmed
-    // delivered; the consumer's counter-signature binds them to the count, but
-    // does not prove delivery—see the crate-level docs for why.
-    state.ledger.write().await.record(
-        &q.session,
-        q.chunk,
-        ServedChunk {
-            work_id: work_id.to_ascii_lowercase(),
-            consumer: normalize_addr(&q.consumer),
-            bytes: bytes.len() as u64,
-        },
-    );
+    // Capture what a completed delivery should record, then hand ownership to
+    // the stream's completion callback.
+    let served = ServedChunk {
+        work_id: work_id.to_ascii_lowercase(),
+        consumer: normalize_addr(&q.consumer),
+        bytes: bytes.len() as u64,
+    };
+    let state_for_done = state.clone();
+    let consumer = normalize_addr(&q.consumer);
+    let work_for_done = work_id.to_ascii_lowercase();
+    let chunk_index = q.chunk_index;
+
+    // 16 KiB slices: small enough that an abandoned transfer stops early, large
+    // enough to avoid a poll per byte.
+    let stream = DeliveryStream::new(bytes, 16 * 1024, move || {
+        if let Ok(mut ledger) = state_for_done.ledger.lock() {
+            ledger.record(&consumer, &work_for_done, chunk_index, served);
+        }
+    });
 
     (
         StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        bytes,
+        axum::body::Body::from_stream(stream),
     )
         .into_response()
 }
 
-/// Issue and sign a receipt for a previously served chunk.
+/// Issue and sign a receipt for a previously delivered chunk.
 ///
-/// Returns 404 when the node has no record of serving that chunk — it will not
-/// sign for bytes it did not move.
+/// Returns 404 when the node has no record of fully delivering that chunk — it
+/// will not sign for bytes it did not finish moving.
 async fn receipt(
     State(state): State<Arc<NodeState>>,
     Json(req): Json<ReceiptRequest>,
 ) -> impl IntoResponse {
-    let ledger = state.ledger.read().await;
     let node_addr = format!("{:#x}", state.signer.address());
-    let receipt = match issue_receipt(
-        &ledger,
-        &node_addr,
-        state.epoch,
-        &req.session_nonce,
-        req.chunk_nonce,
-    ) {
-        Ok(r) => r,
-        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    let receipt = {
+        // Hold the lock only for the lookup; signing happens outside it.
+        let ledger = match state.ledger.lock() {
+            Ok(l) => l,
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "ledger poisoned").into_response()
+            }
+        };
+        match issue_receipt(
+            &ledger,
+            &node_addr,
+            state.epoch,
+            &req.consumer,
+            &req.work_id,
+            req.chunk_index,
+        ) {
+            Ok(r) => r,
+            Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+        }
     };
 
     // Sign the canonical bytes; the consumer will counter-sign the very same
@@ -239,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         signer,
         content_dir,
         epoch,
-        ledger: RwLock::new(Ledger::default()),
+        ledger: std::sync::Mutex::new(Ledger::default()),
     });
 
     let app = Router::new()
