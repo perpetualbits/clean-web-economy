@@ -212,6 +212,7 @@ window.PROJECT_MAP = {
         { label: "Bandwidth discount", status: "done", desc: "H5: per-row credibility_ppm from verified receipts (neutral default reproduces prior payouts bit-for-bit); a claim backed by zero verified bytes is a strict loss (fee burned)." },
         { label: "Reputation signal", status: "done", desc: "Distinct-listener breadth for discovery ranking." },
         { label: "Dust-weight credibility floor", status: "seam", desc: "A very small claimed weight reaches full credibility off one verified byte, so a dust-weight puppet claim still recovers its own fee undeterred (extract ≤ pay-in still holds). Deferred: an absolute expected-bytes floor or weight-sensitive payout target." },
+        { label: "Unmetered fragment requests", status: "seam", desc: "Receipts attest bytes read, not delivered, and bind no byte range, so a modified client can fetch-and-discard fragments under fresh chunk nonces to accumulate verified bytes past the file's real size — strictly cheaper than the dust-weight gap, still deterrent-only (extract ≤ pay-in still holds). Deferred: bind offset/len into the receipt, dedup by byte range, write the ledger after the body is sent." },
       ],
       specs: [
         { label: "full DAPR + anti-fraud", href: "docs/superpowers/specs/2026-07-22-full-dapr-antifraud-design.md" },

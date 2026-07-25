@@ -177,7 +177,27 @@ track:
   recovers their own fee) and a credentialed node must still genuinely serve and
   co-sign that byte. Closing it needs an absolute floor on expected bytes per claim, or
   weight-magnitude sensitivity in the payout target — deferred as a spec-level decision
-  to a later cycle.
+  to a later cycle. *Also found in review, also deferred:* the ledger this node signs
+  from records bytes **read off disk and handed to the response writer**, not bytes
+  actually delivered, and the receipt binds no byte range — so a modified consumer can
+  issue `GET /content/...` requests, never read the response, and still obtain a
+  node-signed receipt for the full count, then repeat under a fresh chunk nonce (the
+  anti-replay key is entirely client-chosen) to accumulate verified bytes far beyond
+  the file's real size. This is strictly cheaper than the dust-weight gap above — it
+  needs no dust-sized weight, just repeated fetch-and-discard — but it is likewise a
+  deterrent gap, not a money-extraction one (same scale-invariant-target, same
+  credentialed-node requirement). The fix is to bind `offset`/`len` into the receipt,
+  dedup by byte range per (user, work), and write the ledger entry only after the body
+  is written; not attempted this cycle. Two smaller items also surfaced: `fragment`
+  (`services/storage/src/lib.rs`) reads a work's ENTIRE content file into memory via
+  `std::fs::read` regardless of the requested window, a memory-exhaustion vector under
+  concurrent requests that must be fixed before any node is publicly reachable; and
+  settlement's event-mode chain layer (`services/settlement/src/chain.rs`) resolves
+  each distinct node's on-chain credential BEFORE checking any receipt signature, with
+  an RPC error aborting settlement — harmless while receipt bundles are
+  operator-supplied local files, but a live denial-of-service once consumers submit
+  bundles directly; fix is to verify signatures first and resolve credentials only for
+  surviving nodes.
 - ✅ **H6 — SSI/VC identity**: `CWEIdentity` — a rotatable issuer set grants revocable,
   expiring verifiable credentials; the registry and jury gate on `isValid` instead of
   owner allowlists (both removed). Removing an issuer invalidates all their credentials

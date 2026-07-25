@@ -9,12 +9,36 @@
 //! One boundary worth naming: the ledger this node signs from records bytes
 //! *read from disk and handed to the response writer*, not bytes confirmed to
 //! have reached the consumer's socket — a plain HTTP handler has no hook to
-//! observe the latter. The node's signature alone therefore is not proof of
-//! delivery. What makes the receipt trustworthy is the OTHER signature: the
-//! consumer counts what it actually received and refuses to counter-sign a
-//! mismatch, and the aggregator only pays out receipts both parties signed. So
-//! an over-attested node count simply produces a receipt nobody will
-//! counter-sign — worthless on its own, and unable to become spendable.
+//! observe the latter — and the receipt itself binds no byte range at all,
+//! only a total count. The node's signature proves exactly one thing: that
+//! THIS node's own ledger holds that count for that session/chunk. It never
+//! signs a caller-supplied number.
+//!
+//! That is NOT the same as proof of delivery, and the consumer's
+//! counter-signature does not close the gap the way it might seem to. The
+//! consumer is the receipt's sole beneficiary, so a modified client has every
+//! incentive to counter-sign a count it knows is inflated, not to withhold its
+//! signature — the `bytes != body.len()` check in `bandwidth_client.rs`
+//! protects an HONEST consumer from a LYING node, and cannot constrain a
+//! malicious consumer, because it runs inside attacker-controlled software.
+//! Concretely: a modified client can issue `GET /content/...` requests, never
+//! read the response body, and still be issued a signed receipt for the full
+//! byte count, because the ledger entry is written inside the `content`
+//! handler before axum flushes anything (see below). Because the anti-replay
+//! key — `(node, session_nonce, chunk_nonce)` — is entirely client-chosen, the
+//! same byte window re-requested under a fresh chunk nonce produces a fresh,
+//! non-colliding receipt, so this can be repeated to accumulate many times a
+//! file's real size in "verified bytes". This is a known, deferred limitation
+//! (see the deferred list in the H5 design doc), not something this code
+//! prevents.
+//!
+//! It is a *deterrent* gap, not a money-extraction one: the DAPR payout target
+//! is scale-invariant (H3), so an inflated count still only ever recovers the
+//! claimant's OWN tier fee — the "extract ≤ pay-in" cap holds regardless — and
+//! the target work's content must still be genuinely hosted on a credentialed
+//! node. The eventual fix is to bind `offset`/`len` into the receipt, dedup by
+//! byte RANGE per (user, work) rather than by chunk nonce, and write the
+//! ledger entry only after the response body has actually been written.
 //!
 //! Configuration (environment):
 //! * `CONTENT_DIR` — directory holding `<work_id>.bin` files (required)
@@ -97,16 +121,25 @@ async fn health() -> &'static str {
 /// only the bytes that were really available, never an inflated request size.
 ///
 /// What it is NOT: proof of delivery. This count is taken the moment the bytes
-/// are handed to axum's response writer, before they are flushed to the
-/// consumer's socket; if the connection drops mid-transfer the ledger still
-/// holds the full count. A plain HTTP handler has no hook to observe the
-/// client actually receiving the bytes, so establishing that the transfer
-/// completed is deliberately not this function's job — it is the consumer's.
-/// The consumer counts what it actually received and declines to counter-sign
-/// a receipt whose count doesn't match, and the aggregator only pays out
-/// receipts both parties signed. So a receipt only becomes spendable once
-/// node and consumer agree on the number; the node's signature by itself
-/// proves nothing about delivery.
+/// are handed to axum's response writer — and the ledger entry below is
+/// written here in the handler, BEFORE axum flushes any of it to the
+/// consumer's socket. If the connection drops mid-transfer, or the caller
+/// never reads the response body at all, the ledger still holds the full
+/// count. A plain HTTP handler has no hook to observe the client actually
+/// receiving the bytes, so establishing that the transfer completed is
+/// deliberately not this function's job.
+///
+/// Nor does the consumer's counter-signature close that gap on its own: the
+/// consumer is the sole beneficiary of an inflated count, so a modified
+/// client has every reason to counter-sign a number it knows is wrong, not to
+/// refuse. Combined with the receipt binding no byte range and the
+/// anti-replay key (`node`, `session_nonce`, `chunk_nonce`) being entirely
+/// client-chosen, a modified client can call this endpoint repeatedly under
+/// fresh chunk nonces, discard the body every time, and accumulate signed
+/// receipts for many times the file's real size. See the crate-level docs
+/// above for the full argument, why it is a deterrent gap rather than a
+/// money-extraction one, and why it is a known, deferred limitation rather
+/// than something this handler guards against.
 async fn content(
     State(state): State<Arc<NodeState>>,
     AxumPath(work_id): AxumPath<String>,

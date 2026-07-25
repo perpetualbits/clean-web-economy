@@ -56,7 +56,11 @@ Runs alongside the feature phases.
   (`make -C ops bandwidth-demo`) — a zero-byte usage claim is now a strict loss.
   *Known gap:* a very small claimed weight can still reach full credibility off one
   verified byte, so a dust-weight puppet claim isn't deterred the way an honest claim
-  is (full accounting in `docs/roadmap.md`) — see
+  is. *Also known:* receipts attest bytes read, not delivered, and bind no byte range,
+  so a modified client can accumulate verified bytes via repeated fragment
+  fetch-and-discard requests — strictly cheaper than the dust-weight gap, and
+  likewise a deterrent gap rather than a money leak (full accounting in
+  `docs/roadmap.md`) — see
   `docs/superpowers/specs/2026-07-25-h5-bandwidth-receipts-design.md`
 
 Still to come: H2 cycle 2 (work-identity blinding, manifest-signature and

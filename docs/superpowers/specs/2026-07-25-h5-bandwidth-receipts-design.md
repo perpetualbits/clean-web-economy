@@ -65,6 +65,42 @@ compute a **real per-(user, work) bandwidth-credibility** that feeds DAPR — so
   byte — it is not free to manufacture. Closing it needs either an absolute floor on
   expected bytes per claim, or weight-magnitude sensitivity in the payout target
   itself; both are spec-level decisions deferred to a later cycle.
+- **Unmetered fragment requests / receipts attest reads, not delivery** *(found in
+  review, deliberately deferred — not a gap the team missed)*: the ledger
+  `services/storage/src/main.rs` signs from records bytes **read off disk and handed
+  to axum's response writer**, not bytes actually **delivered** to the consumer's
+  socket, and the `Receipt` type binds no byte range at all (`bytes` but no
+  `offset`/`len`). Because the anti-replay key is `(node, session_nonce,
+  chunk_nonce)` — all three client-chosen — a modified consumer can issue
+  `GET /content/...` requests, never read the response body, and still obtain a
+  node-signed receipt for the full byte count under a fresh chunk nonce each time.
+  Review testing extracted 25 MiB of "verified bytes" from an 8 MiB file this way,
+  with no collusion required: the client owns its own key, the epoch matches, and
+  the node is genuinely credentialed, so every existing verification gate passes.
+  This is **strictly cheaper than the dust-weight gap above**: the dust-weight gap
+  only pays off for a dust-sized claimed weight, whereas this one lets a claim of
+  ANY size reach full credibility, for the cost of re-requesting (and discarding)
+  a small fragment repeatedly rather than genuinely moving bytes. It is still a
+  *deterrent* gap, not a money-extraction one, for the same reason as above: the
+  DAPR payout target is scale-invariant (H3), so an inflated count still only ever
+  recovers the claimant's own tier fee, and the target work's content must still be
+  genuinely hosted on a credentialed node. Closing it needs binding `offset`/`len`
+  into the receipt and deduping by byte RANGE per (user, work) rather than by chunk
+  nonce, plus writing the ledger entry only after the response body has actually
+  been written — a spec-level change deferred to a later cycle, not attempted here.
+- **Whole-file reads in `fragment`** (`services/storage/src/lib.rs`): regardless of
+  the requested `offset`/`len` window, `fragment` loads the ENTIRE content file into
+  memory via `std::fs::read` before slicing out the requested window, so concurrent
+  requests against a large file are a memory-exhaustion vector. Must be fixed before
+  any node is publicly reachable; harmless for the demo's small fixtures.
+- **Credential lookups precede signature verification** (`services/settlement/src/chain.rs`,
+  `run_events`): each distinct node address in a receipt bundle has its on-chain
+  `isValid` credential resolved BEFORE any receipt signature is checked, and an RPC
+  error there aborts settlement outright. Harmless while the bundle is an
+  operator-supplied local file; becomes a live denial-of-service the moment
+  consumers submit bundles directly, since an attacker can name an address whose
+  `isValid` call reverts or times out. Fix is to verify signatures first and only
+  resolve credentials for nodes whose receipts survive that check.
 
 ### 1.3 Decisions locked in brainstorming
 | # | Decision | Choice |
