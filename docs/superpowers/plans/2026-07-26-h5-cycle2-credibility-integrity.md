@@ -1735,6 +1735,15 @@ git commit -m "settlement: per-epoch evidence floor, chunk dedup, on-chain bandw
   assert *both* that its verified bytes are 0 *and* that its fee burned — otherwise a
   zero payout caused by the epoch floor would masquerade as proof that delivery-gating
   works.
+- **The node's ledger persists for the life of the process, keyed by
+  `(consumer, work_id, chunk_index)`.** Task 3's implementer hit this while smoke-testing:
+  running `honest` and then `no-download` with the *same* consumer key against the *same*
+  node makes the second run find the first run's genuine ledger entries and receive real
+  receipts — making a "proves nothing" result look like a broken trust property. The six
+  acts are safe by construction because each uses a **distinct user** and a **distinct
+  work**, and Act 6 runs against a separate node process. Preserve both properties: if you
+  ever reuse a user or a work across two acts, the later act inherits the earlier one's
+  evidence and its assertion becomes meaningless.
 
 - [ ] **Step 1: Extend the demo script**
 
