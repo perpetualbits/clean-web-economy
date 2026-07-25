@@ -1855,6 +1855,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cwe-receipt"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "cwe-settlement"
 version = "0.1.0"
 dependencies = [

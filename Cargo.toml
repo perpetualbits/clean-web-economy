@@ -21,6 +21,7 @@ resolver = "2"
 members = [
     "libs/fingerprint",   # WP3 — deterministic fingerprint stub
     "libs/wallet-zk",     # WP4 — wallet, commitments, session accounting
+    "libs/receipt",       # H5 — co-signed bandwidth receipts
     "libs/zk-circuits",   # H2 — zero-knowledge usage-proof circuits
     "sims",               # WP2 — DAPR payout-math reference crate
     "services/settlement",  # WP5 — off-chain epoch settlement job

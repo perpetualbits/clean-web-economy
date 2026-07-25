@@ -1,0 +1,19 @@
+# H5 — the portable bandwidth-receipt type shared by the storage node, the
+# consumer client, and the settlement aggregator.
+[package]
+name = "cwe-receipt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Co-signed bandwidth receipts for the Clean Web Economy"
+
+[dependencies]
+alloy = { version = "2", features = ["full"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+alloy = { version = "2", features = ["full"] }
