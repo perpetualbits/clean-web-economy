@@ -121,8 +121,24 @@ which is exactly what let a fresh session mint fresh credit; keeping them would 
 protection they no longer provide.
 
 **Credit dedup key: `(consumer, work_id, chunk_index)`.** Each distinct block of a work
-counts once per consumer per epoch, so total credit for `(U, W)` is capped at the work's
-content size no matter how many requests are issued.
+counts once per consumer per epoch, so however many requests a client issues, it cannot
+be credited twice for the same block.
+
+**How far that cap actually reaches — stated precisely, because the obvious phrasing
+overstates it.** Against a client acting alone, credit for `(U, W)` is bounded by the
+work's real content size: an honest node returns an empty body for a `chunk_index` past
+the end of the content, which credits zero, so fabricated indices earn nothing and each
+real index earns at most `CHUNK_SIZE` (enforced by clamping `bytes` at the accumulation
+site, since a genuine final chunk is short but never long). That is the threat model this
+cycle closes.
+
+It does **not** bind a *colluding credentialed node*, which can sign receipts for indices
+beyond a work's true extent. Nothing here fixes that, and nothing here claims to: a node
+willing to lie can already attest content it never served, which is precisely what the
+CWEIdentity storage-node credential gates today and what staking/slashing — deferred in
+cycle 1 §1.2 and still deferred — is for. Bounding `chunk_index` against a work's real
+chunk count would need the content length on-chain as another authoritative field, the
+same cost that ruled out a content-length cap as the dedup mechanism (E3).
 
 This also corrects a **latent double-count in cycle 1**: under the old key, two different
 nodes serving the same chunk to the same consumer counted twice, though it is the same
