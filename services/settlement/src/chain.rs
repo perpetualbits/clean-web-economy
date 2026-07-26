@@ -43,7 +43,7 @@ use cwe_zk_circuits::prove::{digest_from_active, PublicRow};
 
 use crate::config::Config;
 use crate::disclosure::Disclosure;
-use crate::receipts::{accept_receipts, row_credibility_ppm};
+use crate::receipts::{accept_receipts, epoch_factor_ppm, row_credibility_ppm};
 use crate::settle::{settle, settle_raw, settle_raw_with_row_credibility, Settlement};
 
 // Minimal on-chain interfaces the settlement job touches. `#[sol(rpc)]` generates
@@ -56,6 +56,7 @@ sol! {
     #[sol(rpc)]
     contract Registry {
         function pricePerMinOf(bytes32 workId) external view returns (uint256);
+        function bandwidthRateOf(bytes32 workId) external view returns (uint256);
     }
     #[sol(rpc)]
     contract Consumption {
@@ -324,9 +325,16 @@ async fn run_disclosure<P: Provider>(
 /// **Bandwidth:** if [`Config::receipts_path`] names a receipt bundle, it is
 /// verified (signatures, epoch binding, storage-node credential, anti-replay)
 /// and turned into a per-row bandwidth credibility via
-/// [`crate::settle::settle_raw_with_row_credibility`]. Without a bundle,
-/// bandwidth stays neutral and this is byte-for-byte the pre-H5 behaviour —
-/// the four legacy demos and the player never set `RECEIPTS`.
+/// [`crate::settle::settle_raw_with_row_credibility`]. Each row's credibility
+/// folds two stages: its own claimed-vs-verified byte ratio, using a rate read
+/// live from `CWERegistry::bandwidthRateOf` (on-chain, so no aggregator
+/// operator hand-maintains a rate file per work), and then the claimant's
+/// absolute per-epoch evidence floor ([`epoch_factor_ppm`], from
+/// [`Config::min_epoch_bytes`]) — a user whose total deduped bytes this epoch
+/// fall short of that floor has every row discounted further, closing the
+/// dust-weight gap a per-row ratio alone cannot. Without a bundle, bandwidth
+/// stays neutral and this is byte-for-byte the pre-H5 behaviour — the four
+/// legacy demos and the player never set `RECEIPTS`.
 async fn run_events<P: Provider>(cfg: &Config, provider: &P) -> Result<Settlement, BoxErr> {
     // Resolve the contracts this mode reads: tier fees and the epoch beacon.
     let tiers_addr = Address::from_str(&cfg.deployments.tiers)?;
@@ -426,11 +434,49 @@ async fn run_events<P: Provider>(cfg: &Config, provider: &P) -> Result<Settlemen
             let verified = accept_receipts(&bundle, cfg.epoch, &|node: &str| {
                 valid.get(node).copied().unwrap_or(false)
             });
-            let ppm = row_credibility_ppm(&rows, &verified, &cfg.rates);
+
+            // Each work's expected-bytes rate now comes from the chain, not a
+            // config file: it decides payouts, so it must live somewhere the
+            // aggregator operator does not hand-maintain per work.
+            let registry_addr = Address::from_str(&cfg.deployments.registry)?;
+            let registry = Registry::new(registry_addr, provider);
+            let mut rates: BTreeMap<String, u64> = BTreeMap::new();
+            for row in &rows {
+                let work = row.work.to_ascii_lowercase();
+                if rates.contains_key(&work) {
+                    continue;
+                }
+                let id = B256::from_str(&work)?;
+                let rate = registry.bandwidthRateOf(id).call().await?;
+                rates.insert(work, u64::try_from(rate).unwrap_or(0));
+            }
+
+            let factor = epoch_factor_ppm(&verified, cfg.min_epoch_bytes);
+            let ppm = row_credibility_ppm(&rows, &verified, &rates, &factor);
+
+            // Write the per-(user, work) verified bytes beside the payout output
+            // so a demo or operator can assert on the MECHANISM — how much
+            // evidence each claim carried — and not only on the final payout,
+            // which can be zero for several different reasons.
+            let sidecar: Vec<serde_json::Value> = verified
+                .iter()
+                .map(|((user, work), bytes)| {
+                    serde_json::json!({
+                        "user": user,
+                        "work_id": work,
+                        "verified_bytes": bytes.to_string(),
+                        "epoch_factor_ppm": factor.get(user).copied().unwrap_or(0),
+                    })
+                })
+                .collect();
+            let sidecar_path = cfg.out_path.with_extension("bandwidth.json");
+            std::fs::write(&sidecar_path, serde_json::to_string_pretty(&sidecar)?)?;
+
             eprintln!(
-                "bandwidth: {} receipts submitted, {} (user, work) pairs credited",
+                "bandwidth: {} receipts submitted, {} (user, work) pairs credited, detail → {}",
                 bundle.receipts.len(),
-                verified.len()
+                verified.len(),
+                sidecar_path.display()
             );
             Some(ppm)
         }

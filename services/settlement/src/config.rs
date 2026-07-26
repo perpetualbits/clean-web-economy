@@ -1,7 +1,6 @@
 //! Settlement job configuration, assembled from environment variables and the
 //! deployment address map written by the deploy script.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -50,13 +49,13 @@ pub struct Config {
     /// are exactly what they were before H5 — which is what keeps every legacy
     /// demo working unchanged.
     pub receipts_path: Option<PathBuf>,
-    /// Per-work bandwidth rates in bytes per `RATE_SCALE` units of proven weight
-    /// (from `RATES`), keyed by lowercase `0x` work id. Empty when unset.
+    /// The absolute per-epoch evidence floor in bytes (from `MIN_EPOCH_BYTES`,
+    /// default one whole `CHUNK_SIZE`). A user whose deduped verified bytes fall
+    /// below this has every row scaled down proportionally.
     ///
-    /// This map is aggregator-side ON PURPOSE: whoever sets a rate can switch
-    /// that work's bandwidth discount off, so it must not come from the payout
-    /// beneficiary or from the (consumer-written) receipt bundle.
-    pub rates: BTreeMap<String, u64>,
+    /// Aggregator-side rather than on-chain because, unlike a work's bandwidth
+    /// rate, it is not settable by anyone who benefits from it.
+    pub min_epoch_bytes: u64,
 }
 
 impl Config {
@@ -68,9 +67,10 @@ impl Config {
     /// selects proven-weights event mode), `DEPLOYMENTS` (default
     /// `chain/deployments/localhost.json`), `OUT` (default
     /// `chain/out/epoch-<n>-proofs.json`), `RECEIPTS` (OPTIONAL — a bandwidth
-    /// receipt bundle to verify; its absence keeps bandwidth neutral), `RATES`
-    /// (OPTIONAL — a JSON file of per-work bandwidth rates; unset works are
-    /// treated as having no rate, which fails closed under `RECEIPTS`).
+    /// receipt bundle to verify; its absence keeps bandwidth neutral),
+    /// `MIN_EPOCH_BYTES` (OPTIONAL — the absolute per-epoch evidence floor in
+    /// bytes, default `131_072`; per-work rates now come from the chain, not
+    /// an env-configured file).
     pub fn from_env() -> Result<Config, ConfigError> {
         // Default RPC points at a local Anvil node.
         let rpc_url =
@@ -101,20 +101,14 @@ impl Config {
         // A receipt bundle is optional; without one, bandwidth stays neutral.
         let receipts_path = std::env::var("RECEIPTS").ok().map(PathBuf::from);
 
-        // The per-work rate map, if supplied. Keys are lowercased so lookups
-        // match the row keys settlement builds from chain data.
-        let rates: BTreeMap<String, u64> = match std::env::var("RATES") {
-            Ok(path) => {
-                let raw = std::fs::read_to_string(&path)
-                    .map_err(|e| ConfigError::Rates(path.clone(), e.to_string()))?;
-                let parsed: BTreeMap<String, u64> = serde_json::from_str(&raw)
-                    .map_err(|e| ConfigError::Rates(path, e.to_string()))?;
-                parsed
-                    .into_iter()
-                    .map(|(k, v)| (k.to_ascii_lowercase(), v))
-                    .collect()
-            }
-            Err(_) => BTreeMap::new(),
+        // The absolute evidence floor. One whole chunk by default: the smallest
+        // statement that means anything is "at least one complete block of a
+        // real work reached this user this epoch".
+        let min_epoch_bytes: u64 = match std::env::var("MIN_EPOCH_BYTES") {
+            Ok(v) => v
+                .parse()
+                .map_err(|_| ConfigError::Invalid("MIN_EPOCH_BYTES".into()))?,
+            Err(_) => 131_072,
         };
 
         Ok(Config {
@@ -125,7 +119,7 @@ impl Config {
             out_path,
             deployments,
             receipts_path,
-            rates,
+            min_epoch_bytes,
         })
     }
 }
@@ -147,7 +141,4 @@ pub enum ConfigError {
     /// The deployments file could not be read or parsed.
     #[error("loading deployments file {0}: {1}")]
     Deployments(String, String),
-    /// The rates file could not be read or parsed.
-    #[error("loading rates file {0}: {1}")]
-    Rates(String, String),
 }

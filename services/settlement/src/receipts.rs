@@ -3,10 +3,11 @@
 //! This is the aggregator's half of the H5 receipt protocol. `cwe-receipt` proves
 //! a receipt was co-signed and unaltered; everything that makes a receipt
 //! *count* lives here: it must be bound to the epoch being settled, its node must
-//! hold a valid storage-node credential, and its `(node, session, chunk)` key
-//! must not have been seen before. Surviving receipts are summed per
-//! (user, work) and compared against what that row's proven weight implies the
-//! user should have had to download.
+//! hold a valid storage-node credential, and its `(consumer, work_id,
+//! chunk_index)` content-position key must not have been seen before. Surviving
+//! receipts are summed per (user, work), compared against what that row's
+//! proven weight implies the user should have had to download, and then
+//! discounted again by each user's absolute per-epoch evidence floor.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,12 +33,21 @@ pub const RATE_SCALE: u128 = 1_000_000_000_000;
 /// 3. its node satisfies `credentialed`, i.e. holds a valid, non-revoked
 ///    storage-node credential. This is what stops a fraudster standing up their
 ///    own "node" and co-signing fabricated receipts with a colluding client;
-/// 4. its `(node, session_nonce, chunk_nonce)` key has not already been counted
-///    in this bundle.
+/// 4. its `(consumer, work_id, chunk_index)` content-position key has not
+///    already been counted in this bundle.
 ///
 /// Rejections are reported on stderr and simply not counted; one bad receipt
 /// never invalidates a bundle, it just fails to earn credibility. Keys are the
 /// lowercase `0x` (consumer, work) pair, matching [`RawRow`]'s `user`/`work`.
+///
+/// Since Task 1 redefined [`Receipt::dedup_key`] to `(consumer, work_id,
+/// chunk_index)` — content position rather than session position — this
+/// function's behaviour changed with no signature edit needed here: the same
+/// block served by two different nodes now collides (it is the same content
+/// either way), and re-fetching one block under a fresh request can no longer
+/// mint additional evidence. See the `same_chunk_from_two_nodes_counts_once`,
+/// `refetching_one_chunk_credits_it_once` and `distinct_chunks_accumulate`
+/// tests below.
 pub fn accept_receipts(
     bundle: &ReceiptBundle,
     epoch: u64,
@@ -76,12 +86,13 @@ pub fn accept_receipts(
             continue;
         }
 
-        // (4) Anti-replay within the bundle.
+        // (4) Anti-replay within the bundle: a repeat of the same content block
+        // for the same consumer, whichever node re-served it.
         let key = r.dedup_key();
         if !seen.insert(key) {
             eprintln!(
-                "warning: dropping replayed receipt (node {}, session {}, chunk {})",
-                r.node, r.session_nonce, r.chunk_nonce
+                "warning: dropping replayed receipt (consumer {}, work {}, chunk {})",
+                r.consumer, r.work_id, r.chunk_index
             );
             continue;
         }
@@ -96,15 +107,66 @@ pub fn accept_receipts(
     totals
 }
 
-/// Compute each row's bandwidth credibility in ppm from the verified byte totals.
+/// Each user's per-epoch evidence factor in ppm, from their DEDUPED verified
+/// bytes summed across every work.
 ///
 /// ```text
-/// expected_bytes = raw · rate(work) / RATE_SCALE
-/// credibility    = clamp(verified_bytes · 1e6 / expected_bytes, 0, 1e6)
+/// epoch_factor(U) = clamp(total_verified_bytes(U) · 1e6 / MIN_EPOCH_BYTES, 0, 1e6)
 /// ```
 ///
-/// Two edge cases matter, and they resolve in OPPOSITE directions on purpose
-/// (spec §4.1):
+/// This is the absolute floor beneath the per-row ratio, and it is what closes
+/// the dust-weight gap: the ratio alone can be satisfied by a single byte when
+/// the claimed weight is small, because expectation scales with weight. An
+/// absolute floor does not scale, so a claimant routing a whole tier fee must
+/// have received a real quantity of content this epoch whatever they claimed.
+///
+/// A genuinely light user is unaffected — one 30-second play moves far more than
+/// the floor — which is the point: a light subscriber is legitimate, and the
+/// deterrent must fall on claims backed by nothing, not on modest consumption.
+pub fn epoch_factor_ppm(
+    verified: &BTreeMap<(String, String), u128>,
+    min_epoch_bytes: u64,
+) -> BTreeMap<String, u64> {
+    // Sum each user's evidence across all their works.
+    let mut totals: BTreeMap<String, u128> = BTreeMap::new();
+    for ((user, _work), bytes) in verified {
+        let entry = totals.entry(normalize_addr(user)).or_insert(0);
+        *entry = entry.saturating_add(*bytes);
+    }
+
+    // A zero floor would divide by zero; treat it as "no floor configured" and
+    // leave every user neutral rather than crediting or burning arbitrarily.
+    if min_epoch_bytes == 0 {
+        return totals.into_keys().map(|u| (u, 1_000_000)).collect();
+    }
+
+    totals
+        .into_iter()
+        .map(|(user, bytes)| {
+            let ppm = mul_div_floor(bytes, 1_000_000, min_epoch_bytes as u128);
+            (user, std::cmp::min(ppm, 1_000_000) as u64)
+        })
+        .collect()
+}
+
+/// Compute each row's bandwidth credibility in ppm from the verified byte totals.
+///
+/// Two stages apply in sequence:
+///
+/// 1. **Per-row ratio** — does this row's own claimed weight match the bytes
+///    verified for its (user, work) pair?
+///    ```text
+///    expected_bytes = raw · rate(work) / RATE_SCALE
+///    row_ratio      = clamp(verified_bytes · 1e6 / expected_bytes, 0, 1e6)
+///    ```
+/// 2. **Per-user absolute floor** — regardless of how well a row's ratio is
+///    satisfied, it is scaled again by [`epoch_factor_ppm`]: a user whose total
+///    deduped evidence this epoch falls short of `MIN_EPOCH_BYTES` has every row
+///    discounted further, because a small claimed weight can satisfy stage 1
+///    with almost no real bytes.
+///
+/// Two edge cases in stage 1 matter, and they resolve in OPPOSITE directions on
+/// purpose (spec §4.1):
 ///
 /// * A work with **no configured rate, or a rate of zero**, FAILS CLOSED to
 ///   credibility `0`. Treating it as neutral would mean whoever controls the
@@ -112,24 +174,40 @@ pub fn accept_receipts(
 ///   fraudster would simply publish `rate = 0` and collect in full. A
 ///   misconfiguration must cost the claimant, not the system, and it is logged
 ///   so it is loud rather than silent.
-/// * A **genuinely zero-weight row** is neutral: there is no claim to discount,
-///   so there is nothing to punish. A NONZERO row's expectation is floored at
+/// * A **genuinely zero-weight row** has no claim of its own to discount, but it
+///   still belongs to a user whose epoch evidence may be thin — so instead of a
+///   flat neutral it takes exactly that user's `epoch_factor`, folding in stage
+///   2 the same as every other row. A NONZERO row's expectation is floored at
 ///   `1` byte rather than allowed to round down to zero — otherwise a
 ///   dust-weight claim (too small for the integer division to register any
 ///   expected bytes) would slip through as neutral while contributing nothing,
 ///   inverting the fee-conservation property this module exists to protect:
 ///   the optimal fraud would become "claim less", not "claim honestly."
 ///
-/// The clamp at neutral means over-serving buys no extra credit — bandwidth can
-/// only ever discount a payout.
+/// A user ABSENT from `epoch_factor` entirely has supplied no verified bytes at
+/// all this epoch and fails closed to `0` — never a default neutral — on every
+/// one of their rows, including the missing/zero-rate early return (already `0`)
+/// and the zero-weight row (which now reads `0` from the missing lookup rather
+/// than assuming neutral).
+///
+/// The clamp at neutral in stage 1 means over-serving buys no extra credit —
+/// bandwidth can only ever discount a payout, never inflate one.
 pub fn row_credibility_ppm(
     rows: &[RawRow],
     verified: &BTreeMap<(String, String), u128>,
     rates: &BTreeMap<String, u64>,
+    epoch_factor: &BTreeMap<String, u64>,
 ) -> Vec<u64> {
     rows.iter()
         .map(|row| {
             let work = row.work.to_ascii_lowercase();
+            // This user's absolute per-epoch evidence factor. Absent means no
+            // verified bytes were attributed to them at all this epoch, so they
+            // fail closed at zero rather than defaulting to neutral.
+            let factor = epoch_factor
+                .get(&normalize_addr(&row.user))
+                .copied()
+                .unwrap_or(0);
 
             // Fail closed on a missing or zero rate.
             let rate = match rates.get(&work).copied() {
@@ -144,10 +222,11 @@ pub fn row_credibility_ppm(
                 }
             };
 
-            // A genuinely zero-weight row claims nothing, so there is nothing
-            // to discount.
+            // A genuinely zero-weight row has nothing of its own to discount,
+            // but it still belongs to a user whose epoch evidence may be thin —
+            // so it takes that user's epoch factor rather than a flat neutral.
             if row.raw == 0 {
-                return 1_000_000;
+                return factor;
             }
             // Any NONZERO claim must be backed by at least one byte: floor the
             // expectation but never to zero, or a dust-weight claim slips below
@@ -161,7 +240,11 @@ pub fn row_credibility_ppm(
                 .unwrap_or(0);
             // Ratio in ppm, clamped at neutral.
             let ppm = mul_div_floor(bytes, 1_000_000, expected);
-            std::cmp::min(ppm, 1_000_000) as u64
+            let row_ppm = std::cmp::min(ppm, 1_000_000) as u64;
+            // Fold in the user's absolute per-epoch evidence factor. A user with
+            // no entry has supplied no verified bytes at all, so they fail
+            // closed at zero rather than defaulting to neutral.
+            mul_div_floor(row_ppm as u128, factor as u128, 1_000_000) as u64
         })
         .collect()
 }
@@ -170,20 +253,24 @@ pub fn row_credibility_ppm(
 /// overflow a plain `a * b` would hit when `a` is a proven weight (~2^120) and
 /// `b` a rate (~2^64).
 ///
-/// This is a HELPER FOR THIS MODULE'S TWO CALL SITES, not a general-purpose
+/// This is a HELPER FOR THIS MODULE'S FOUR CALL SITES, not a general-purpose
 /// `mul_div`: the identity `(a/d)·b + ((a%d)·b)/d` is only an exact floor while
 /// `(a mod d)·b < 2^128`, and both intermediate `saturating_mul`s can silently
 /// clip on arbitrary inputs where that does not hold (a bignum-reference fuzz
-/// found ~24% of unconstrained `(a, b, d)` triples computed wrong). Both
-/// current callers satisfy the precondition: the `expected` computation has
-/// `r = a % RATE_SCALE < 1e12` and `b = rate ≤ 2^64`; the `ppm` computation has
-/// `r = bytes % expected ≤ bytes` and `b = 1_000_000`. Saturating arithmetic on
-/// the outer add means an absurd (but precondition-respecting) input degrades
-/// to `u128::MAX` — for the `expected` call site specifically, that reads as an
-/// unmeetable expectation and so zero credibility, not a wrapped small number
-/// that would hand out free credit — but this degrade-to-`MAX` reading does
-/// NOT generalise to arbitrary callers; do not reuse this function outside
-/// `row_credibility_ppm` without re-deriving the precondition.
+/// found ~24% of unconstrained `(a, b, d)` triples computed wrong). All four
+/// current callers satisfy the precondition: `row_credibility_ppm`'s `expected`
+/// computation has `r = a % RATE_SCALE < 1e12` and `b = rate ≤ 2^64`; its `ppm`
+/// computation has `r = bytes % expected ≤ bytes` and `b = 1_000_000`; its final
+/// fold has `r = row_ppm % 1_000_000 < 1e6` (both operands already clamped to
+/// `≤ 1e6`) and `b = factor ≤ 1e6`; `epoch_factor_ppm`'s ratio has
+/// `r = bytes % min_epoch_bytes < min_epoch_bytes ≤ 2^64` and `b = 1_000_000`.
+/// Saturating arithmetic on the outer add means an absurd (but
+/// precondition-respecting) input degrades to `u128::MAX` — for the `expected`
+/// call site specifically, that reads as an unmeetable expectation and so zero
+/// credibility, not a wrapped small number that would hand out free credit —
+/// but this degrade-to-`MAX` reading does NOT generalise to arbitrary callers;
+/// do not reuse this function outside `row_credibility_ppm` and
+/// `epoch_factor_ppm` without re-deriving the precondition.
 fn mul_div_floor(a: u128, b: u128, d: u128) -> u128 {
     let q = a / d;
     let r = a % d;
@@ -206,22 +293,21 @@ mod tests {
         format!("0x{}", "aa".repeat(32))
     }
 
-    /// Co-sign a receipt for `bytes` at `chunk` in `epoch`.
+    /// Co-sign a receipt for `bytes` at `chunk_index` in `epoch`.
     fn signed(
         node: &PrivateKeySigner,
         consumer: &PrivateKeySigner,
         bytes: u64,
         epoch: u64,
-        chunk: u64,
+        chunk_index: u64,
     ) -> SignedReceipt {
         let receipt = Receipt {
             work_id: work(),
             consumer: format!("{:#x}", consumer.address()),
             node: format!("{:#x}", node.address()),
+            chunk_index,
             bytes,
             epoch,
-            session_nonce: format!("0x{}", "5c".repeat(32)),
-            chunk_nonce: chunk,
         };
         let msg = receipt.canonical_bytes().unwrap();
         SignedReceipt {
@@ -271,6 +357,58 @@ mod tests {
         };
         let got = accept_receipts(&bundle, 5, &|_n: &str| false);
         assert!(got.is_empty());
+    }
+
+    /// Two receipts for the SAME chunk of the same work to the same consumer,
+    /// served by DIFFERENT nodes, count once — it is the same content. Cycle 1
+    /// keyed on the node and double-counted this.
+    #[test]
+    fn same_chunk_from_two_nodes_counts_once() {
+        let node_a = PrivateKeySigner::random();
+        let node_b = PrivateKeySigner::random();
+        let consumer = PrivateKeySigner::random();
+        let bundle = ReceiptBundle {
+            epoch: 5,
+            receipts: vec![
+                signed(&node_a, &consumer, 1000, 5, 0),
+                signed(&node_b, &consumer, 1000, 5, 0),
+            ],
+        };
+        let got = accept_receipts(&bundle, 5, &all_ok);
+        let key = (format!("{:#x}", consumer.address()), work());
+        assert_eq!(got.get(&key).copied(), Some(1000));
+    }
+
+    /// Re-fetching the same chunk cannot amplify credit, however many receipts
+    /// are produced.
+    #[test]
+    fn refetching_one_chunk_credits_it_once() {
+        let node = PrivateKeySigner::random();
+        let consumer = PrivateKeySigner::random();
+        let receipts = (0..50)
+            .map(|_| signed(&node, &consumer, 1000, 5, 0))
+            .collect();
+        let got = accept_receipts(&ReceiptBundle { epoch: 5, receipts }, 5, &all_ok);
+        let key = (format!("{:#x}", consumer.address()), work());
+        assert_eq!(got.get(&key).copied(), Some(1000));
+    }
+
+    /// Distinct chunks are distinct evidence and accumulate.
+    #[test]
+    fn distinct_chunks_accumulate() {
+        let node = PrivateKeySigner::random();
+        let consumer = PrivateKeySigner::random();
+        let bundle = ReceiptBundle {
+            epoch: 5,
+            receipts: vec![
+                signed(&node, &consumer, 1000, 5, 0),
+                signed(&node, &consumer, 1000, 5, 1),
+                signed(&node, &consumer, 500, 5, 2),
+            ],
+        };
+        let got = accept_receipts(&bundle, 5, &all_ok);
+        let key = (format!("{:#x}", consumer.address()), work());
+        assert_eq!(got.get(&key).copied(), Some(2500));
     }
 
     /// A replayed chunk (same node, session and chunk nonce) is counted once,
@@ -331,15 +469,20 @@ mod tests {
         verified.insert(("0xu".to_string(), work()), 8192u128);
         let mut rates = BTreeMap::new();
         rates.insert(work(), 8192u64);
+        let mut full = BTreeMap::new();
+        full.insert("0xu".to_string(), 1_000_000u64);
         assert_eq!(
-            row_credibility_ppm(&rows, &verified, &rates),
+            row_credibility_ppm(&rows, &verified, &rates, &full),
             vec![1_000_000]
         );
 
         // Ten times the bytes still clamps to neutral.
         let mut over = BTreeMap::new();
         over.insert(("0xu".to_string(), work()), 81_920u128);
-        assert_eq!(row_credibility_ppm(&rows, &over, &rates), vec![1_000_000]);
+        assert_eq!(
+            row_credibility_ppm(&rows, &over, &rates, &full),
+            vec![1_000_000]
+        );
     }
 
     /// Half the expected bytes gives half credibility.
@@ -354,7 +497,12 @@ mod tests {
         verified.insert(("0xu".to_string(), work()), 4096u128);
         let mut rates = BTreeMap::new();
         rates.insert(work(), 8192u64);
-        assert_eq!(row_credibility_ppm(&rows, &verified, &rates), vec![500_000]);
+        let mut full = BTreeMap::new();
+        full.insert("0xu".to_string(), 1_000_000u64);
+        assert_eq!(
+            row_credibility_ppm(&rows, &verified, &rates, &full),
+            vec![500_000]
+        );
     }
 
     /// No receipts at all → zero credibility → a strict loss downstream.
@@ -367,8 +515,10 @@ mod tests {
         }];
         let mut rates = BTreeMap::new();
         rates.insert(work(), 8192u64);
+        let mut full = BTreeMap::new();
+        full.insert("0xu".to_string(), 1_000_000u64);
         assert_eq!(
-            row_credibility_ppm(&rows, &BTreeMap::new(), &rates),
+            row_credibility_ppm(&rows, &BTreeMap::new(), &rates, &full),
             vec![0]
         );
     }
@@ -384,21 +534,25 @@ mod tests {
         }];
         let mut verified = BTreeMap::new();
         verified.insert(("0xu".to_string(), work()), 99_999u128);
+        let mut full = BTreeMap::new();
+        full.insert("0xu".to_string(), 1_000_000u64);
 
         // Missing entirely.
         assert_eq!(
-            row_credibility_ppm(&rows, &verified, &BTreeMap::new()),
+            row_credibility_ppm(&rows, &verified, &BTreeMap::new(), &full),
             vec![0]
         );
 
         // Explicitly zero.
         let mut zero = BTreeMap::new();
         zero.insert(work(), 0u64);
-        assert_eq!(row_credibility_ppm(&rows, &verified, &zero), vec![0]);
+        assert_eq!(row_credibility_ppm(&rows, &verified, &zero, &full), vec![0]);
     }
 
     /// A zero-WEIGHT row has no expectation to fall short of, so it stays
-    /// neutral (there is nothing to discount).
+    /// neutral (there is nothing to discount) — as long as the user's own
+    /// epoch evidence is neutral too; see `epoch_factor_discounts_a_satisfied_row`
+    /// and `missing_epoch_factor_fails_closed` for the case where it is not.
     #[test]
     fn zero_weight_row_is_neutral() {
         let rows = vec![RawRow {
@@ -408,8 +562,10 @@ mod tests {
         }];
         let mut rates = BTreeMap::new();
         rates.insert(work(), 8192u64);
+        let mut full = BTreeMap::new();
+        full.insert("0xu".to_string(), 1_000_000u64);
         assert_eq!(
-            row_credibility_ppm(&rows, &BTreeMap::new(), &rates),
+            row_credibility_ppm(&rows, &BTreeMap::new(), &rates, &full),
             vec![1_000_000]
         );
     }
@@ -431,8 +587,10 @@ mod tests {
         }];
         let mut rates = BTreeMap::new();
         rates.insert(work(), 960_000u64);
+        let mut full = BTreeMap::new();
+        full.insert("0xu".to_string(), 1_000_000u64);
         assert_eq!(
-            row_credibility_ppm(&rows, &BTreeMap::new(), &rates),
+            row_credibility_ppm(&rows, &BTreeMap::new(), &rates, &full),
             vec![0]
         );
     }
@@ -444,12 +602,11 @@ mod tests {
     /// property: below the point where expected bytes would floor to zero,
     /// the model cannot express "the claimant provided less evidence than a
     /// full-weight claim would need," because there is no room left under one
-    /// byte to discount into. Closing this residual (a dust-weight claim plus
-    /// one byte still captures the whole fee) needs an absolute floor on
-    /// expected bytes or weight-sensitivity in the payout target — a
-    /// spec-level decision, not something this test asserts or this module
-    /// attempts to fix. This test exists only to PIN the actual boundary
-    /// behaviour so a future change to the floor cannot silently drift.
+    /// byte to discount into. This residual is what `epoch_factor_ppm` closes
+    /// from the caller's side (see `epoch_factor_discounts_a_satisfied_row`
+    /// below): this test passes a NEUTRAL (`&full`) factor on purpose, to pin
+    /// the per-row ratio's own boundary behaviour in isolation from that
+    /// absolute floor, so a future change to either stage cannot silently drift.
     #[test]
     fn dust_weight_expectation_floors_to_one_byte() {
         let rows = vec![RawRow {
@@ -461,8 +618,10 @@ mod tests {
         verified.insert(("0xu".to_string(), work()), 1u128);
         let mut rates = BTreeMap::new();
         rates.insert(work(), 960_000u64);
+        let mut full = BTreeMap::new();
+        full.insert("0xu".to_string(), 1_000_000u64);
         assert_eq!(
-            row_credibility_ppm(&rows, &verified, &rates),
+            row_credibility_ppm(&rows, &verified, &rates, &full),
             vec![1_000_000],
             "one byte meets the floored-at-1 expectation and earns full credit"
         );
@@ -488,8 +647,11 @@ mod tests {
         verified.insert(("0xu1".to_string(), work()), 8192u128);
         let mut rates = BTreeMap::new();
         rates.insert(work(), 8192u64);
+        let mut full = BTreeMap::new();
+        full.insert("0xu1".to_string(), 1_000_000u64);
+        full.insert("0xu2".to_string(), 1_000_000u64);
         assert_eq!(
-            row_credibility_ppm(&rows, &verified, &rates),
+            row_credibility_ppm(&rows, &verified, &rates, &full),
             vec![1_000_000, 0]
         );
     }
@@ -504,10 +666,101 @@ mod tests {
         }];
         let mut rates = BTreeMap::new();
         rates.insert(work(), u64::MAX);
+        let mut full = BTreeMap::new();
+        full.insert("0xu".to_string(), 1_000_000u64);
         // Expected is astronomically larger than any real byte count, so this is
         // a strict loss — but it must COMPUTE, not panic or wrap.
         assert_eq!(
-            row_credibility_ppm(&rows, &BTreeMap::new(), &rates),
+            row_credibility_ppm(&rows, &BTreeMap::new(), &rates, &full),
+            vec![0]
+        );
+    }
+
+    /// A user meeting the epoch floor is undiscounted; one below it is scaled
+    /// proportionally; one with nothing is zero.
+    #[test]
+    fn epoch_factor_scales_below_the_floor() {
+        let mut verified: BTreeMap<(String, String), u128> = BTreeMap::new();
+        verified.insert(("0xfull".to_string(), work()), 131_072);
+        verified.insert(("0xhalf".to_string(), work()), 65_536);
+        verified.insert(("0xdust".to_string(), work()), 1);
+
+        let f = epoch_factor_ppm(&verified, 131_072);
+        assert_eq!(f.get("0xfull").copied(), Some(1_000_000));
+        assert_eq!(f.get("0xhalf").copied(), Some(500_000));
+        assert_eq!(f.get("0xdust").copied(), Some(7)); // 1e6/131072, floored
+    }
+
+    /// Evidence sums ACROSS works: a user who consumed several works reaches the
+    /// floor on their combined bytes, not per work.
+    #[test]
+    fn epoch_factor_sums_across_works() {
+        let other = format!("0x{}", "bb".repeat(32));
+        let mut verified: BTreeMap<(String, String), u128> = BTreeMap::new();
+        verified.insert(("0xu".to_string(), work()), 65_536);
+        verified.insert(("0xu".to_string(), other), 65_536);
+        assert_eq!(
+            epoch_factor_ppm(&verified, 131_072).get("0xu").copied(),
+            Some(1_000_000)
+        );
+    }
+
+    /// Over-delivering does not earn above neutral.
+    #[test]
+    fn epoch_factor_clamps_at_neutral() {
+        let mut verified: BTreeMap<(String, String), u128> = BTreeMap::new();
+        verified.insert(("0xu".to_string(), work()), 10_000_000);
+        assert_eq!(
+            epoch_factor_ppm(&verified, 131_072).get("0xu").copied(),
+            Some(1_000_000)
+        );
+    }
+
+    /// The epoch factor multiplies the per-row ratio: a row that satisfies its
+    /// own expectation is still discounted if the user's epoch evidence is thin.
+    /// This is what closes the dust-weight gap.
+    #[test]
+    fn epoch_factor_discounts_a_satisfied_row() {
+        let rows = vec![RawRow {
+            user: "0xu".into(),
+            work: work(),
+            raw: 1_000_000_000_000,
+        }];
+        let mut verified = BTreeMap::new();
+        verified.insert(("0xu".to_string(), work()), 8192u128);
+        let mut rates = BTreeMap::new();
+        rates.insert(work(), 8192u64);
+
+        // Row ratio alone would be full credit...
+        let mut full = BTreeMap::new();
+        full.insert("0xu".to_string(), 1_000_000u64);
+        assert_eq!(
+            row_credibility_ppm(&rows, &verified, &rates, &full),
+            vec![1_000_000]
+        );
+
+        // ...but with only 8192 of the 131072-byte floor, it is scaled to 6.25%.
+        let factor = epoch_factor_ppm(&verified, 131_072);
+        assert_eq!(
+            row_credibility_ppm(&rows, &verified, &rates, &factor),
+            vec![62_500]
+        );
+    }
+
+    /// A user absent from the factor map earns nothing — fail closed.
+    #[test]
+    fn missing_epoch_factor_fails_closed() {
+        let rows = vec![RawRow {
+            user: "0xu".into(),
+            work: work(),
+            raw: 1_000_000_000_000,
+        }];
+        let mut verified = BTreeMap::new();
+        verified.insert(("0xu".to_string(), work()), 8192u128);
+        let mut rates = BTreeMap::new();
+        rates.insert(work(), 8192u64);
+        assert_eq!(
+            row_credibility_ppm(&rows, &verified, &rates, &BTreeMap::new()),
             vec![0]
         );
     }
