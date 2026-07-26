@@ -181,9 +181,19 @@ is untouched.
 - Honest light user (one 30-second play ≈ 480 KB) saturates the floor → no discount. This
   is decision E2: a light user is a legitimate subscriber, not a suspect.
 - Dust claimant (negligible bytes) → factor ≈ 0 → burned.
-- Because a Sybil only ever recovers its own fee, any non-zero floor turns wash-trading
-  from break-even into a net loss. The floor does not need to be large; it needs to be
-  real.
+- Because a Sybil only ever recovers its own fee, the floor turns wash-trading from
+  break-even into a net loss of roughly `MIN_EPOCH_BYTES` of bandwidth per account per
+  epoch. **State the cost precisely rather than as "any non-zero floor makes fraud a
+  loss"** — the floor is deliberately cross-work (`Σ_W`, so a legitimately multi-work
+  epoch is judged on its combined evidence), which means it is satisfied by 128 KiB of
+  *any* content, not necessarily of the work being claimed. A dust claimant therefore
+  needs one verified byte of the claimed work — which still requires a **credentialed**
+  node to serve and co-sign it, and that gate is unaffected — plus 128 KiB of anything
+  else per epoch. That is a real, recurring, per-account cost where previously there was
+  none, and it is what makes farming uneconomic at scale; it is not an absolute barrier
+  to a single determined claimant. Making the floor per-work would close that path but
+  would penalise any honest user whose epoch spans several small works, which decision
+  E2 rules out.
 
 `MIN_EPOCH_BYTES` is aggregator config (`MIN_EPOCH_BYTES` env, default **131_072** — one
 complete `CHUNK_SIZE`). Setting it to exactly one chunk is deliberate: with §3.2's
