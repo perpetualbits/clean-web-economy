@@ -1813,7 +1813,11 @@ it costs.
 ```bash
 step "Assertions"
 credit_of() { jq -r --arg w "$1" '[.entries[] | select(.work_id == $w) | .amount][0] // "0"' "$OUT"; }
-bytes_of()  { jq -r --arg u "$1" --arg w "$2" \
+# NOTE: `cast wallet address` returns a CHECKSUMMED (mixed-case) address, while the
+# sidecar stores lowercase. Lowercase the user here or every byte assertion silently
+# matches nothing and passes for the wrong reason — which is exactly the failure this
+# demo's mechanism-level assertions exist to catch.
+bytes_of()  { jq -r --arg u "${1,,}" --arg w "$2" \
   '[.[] | select(.user == $u and .work_id == $w) | .verified_bytes][0] // "0"' "$SIDE"; }
 
 # Act 1 — honest: full fee, and real evidence behind it.
@@ -1826,10 +1830,20 @@ B2=$(bytes_of "$(cast wallet address $U2)" "${WORK_G,,}")
 [ "$B2" = "0" ] || fail "undownloaded chunks were credited $B2 bytes, expected 0"
 [ "$(credit_of "${WORK_G,,}")" = "0" ] || fail "work with no downloads earned credit"
 
-# Act 3 — refetch: 100 receipts for one chunk collapse to a single chunk's bytes.
+# Act 3 — refetch: 100 receipts for one chunk collapse to a single chunk's bytes,
+# and that cap has a real payout consequence.
+#
+# The arithmetic is deterministic: proven weight 45e12 x rate 60000 / 1e12 gives an
+# expectation of 2_700_000 bytes; one credited chunk is 131_072, so the row ratio is
+# 48_545 ppm and the epoch factor saturates (131_072 meets the floor exactly), leaving
+# ~4.85% of the fee earned and ~95% burned.
 B3=$(bytes_of "$(cast wallet address $U3)" "${WORK_R,,}")
 [ "$B3" -le 131072 ] || fail "re-fetching amplified evidence to $B3 bytes"
-[ "$(credit_of "${WORK_R,,}")" = "0" ] || fail "re-fetch work earned credit"
+C3=$(credit_of "${WORK_R,,}")
+# Strictly positive: the row EXISTS and was discounted. Without this, the act would
+# also pass if the usage claim were simply missing — passing for the wrong reason.
+[ "$C3" -gt 0 ] || fail "re-fetch work earned nothing; its usage row is missing, so this act proves nothing"
+[ "$C3" -lt $((FEE / 10)) ] || fail "re-fetch work earned $C3; the amplification cap did not bite"
 
 # Act 4 — dust: real but tiny evidence, so the absolute floor guts the payout.
 B4=$(bytes_of "$(cast wallet address $U4)" "${WORK_D,,}")
