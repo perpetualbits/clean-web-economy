@@ -320,6 +320,12 @@ credit_of() { jq -r --arg w "$1" '[.entries[] | select(.work_id == $w) | .amount
 # argument here, once, rather than at every call site.
 bytes_of()  { jq -r --arg u "${1,,}" --arg w "$2" \
   '[.[] | select(.user == $u and .work_id == $w) | .verified_bytes][0] // "0"' "$SIDE"; }
+# Same lowercasing requirement as bytes_of: the sidecar's `user` field is
+# already lowercase, `cast wallet address` is not. epoch_factor_ppm is a
+# per-user quantity (the absolute evidence floor is per user per epoch, not
+# per row), so any sidecar entry for that user carries the same value.
+factor_of() { jq -r --arg u "${1,,}" \
+  '[.[] | select(.user == $u) | .epoch_factor_ppm][0] // "0"' "$SIDE"; }
 
 # Act 1 — honest: full fee, and real evidence behind it.
 [ "$(credit_of "${WORK_W,,}")" = "$FEE" ] || fail "honest work was not paid in full"
@@ -349,8 +355,15 @@ C3=$(credit_of "${WORK_R,,}")
 # Act 4 — dust: real but tiny evidence, so the absolute floor guts the payout.
 B4=$(bytes_of "$(cast wallet address $U4)" "${WORK_D,,}")
 [ "$B4" = "1024" ] || fail "dust act moved $B4 bytes, expected its whole 1 KiB work"
+# The mechanism itself: U4's epoch evidence (1024 bytes) is scaled against the
+# 131_072-byte floor, giving floor(1024 * 1e6 / 131072) = 7812 exactly. Pinning
+# this catches a disabled floor even when the payout band alone would not —
+# with the floor disabled the factor would be the neutral 1_000_000.
+F4=$(factor_of "$(cast wallet address $U4)")
+[ "$F4" = "7812" ] \
+  || fail "dust act epoch factor was $F4, expected exactly 7812 (floor(1024e6/131072))"
 C4=$(credit_of "${WORK_D,,}")
-[ "$C4" -lt $((FEE / 1000)) ] \
+[ "$C4" -lt $((FEE / 100000)) ] \
   || fail "dust claim earned $C4, expected the epoch floor to burn nearly all of $FEE"
 
 # Act 5 — unset rate: fails closed regardless of genuine evidence.

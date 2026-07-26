@@ -23,6 +23,9 @@ thiserror.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 bytes = "1"
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
 [[bin]]
 name = "cwe-storage"
 path = "src/main.rs"

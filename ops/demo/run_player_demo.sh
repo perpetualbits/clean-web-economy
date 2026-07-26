@@ -181,7 +181,7 @@ FP_COPY=$("$PLAYER" fingerprint "$WORKDIR/copy.wav")
 # $1=work_id $2=content_id $3=fingerprint $4=title $5=payee
 manifest() {
   cat <<JSON
-{"work_id":"$1","content_id":"$2","fingerprint":"$3","title":"$4","description":"demo","tags":["demo"],"work_type":"audio","price_per_min":$PPM,"region":"$EU","creator_id":"$DEPLOYER_ADDR","created_at":1,"payees":[["$5",$PPM]]}
+{"work_id":"$1","content_id":"$2","fingerprint":"$3","title":"$4","description":"demo","tags":["demo"],"work_type":"audio","price_per_min":$PPM,"bandwidth_rate":0,"region":"$EU","creator_id":"$DEPLOYER_ADDR","created_at":1,"payees":[["$5",$PPM]]}
 JSON
 }
 
