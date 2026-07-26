@@ -2,7 +2,7 @@
 
 # Clean Web Economy — Development Roadmap
 
-**Status date:** 2026-07-25
+**Status date:** 2026-07-26
 **Scope:** the full path from the current devnet MVPs to a production, decentralised
 system. The high-level phase list lives in `ROADMAP.md`; this document is the
 detailed, status-annotated plan.
@@ -21,9 +21,9 @@ end-to-end demo on a local Anvil devnet.
 | **Fingerprint** (`libs/fingerprint`) | Haitsma-Kalker perceptual fingerprint (gain-invariant, Hamming compare), `fp:<hex>` format | ✅ H1 |
 | **Client core** (`libs/wallet-zk`) | keccak commitments, Poseidon commitments shared with the ZK circuit, `none-v0` ZK seam, epoch session store | ✅ Phase 1 · H2 |
 | **ZK usage circuits** (`libs/zk-circuits`) | Groth16/BN254 circuit proving usage is well-formed, range-bounded, diminishing-returns-capped, epoch-bound, and per-work-unique; Poseidon commitments/pseudonyms/digest; devnet trusted-setup + prover; EVM proof-point export | ✅ H2 (cycle 1) |
-| **Bandwidth receipts** (`libs/receipt`) | `cwe-receipt` — the co-signed `Receipt` tuple (work, consumer, node, bytes, epoch, session/chunk nonces), RFC 8785 canonical bytes, EIP-191 sign/recover, anti-replay dedup key; portable, shared by the storage node, the consumer, and settlement | ✅ H5 (cycle 1) |
-| **Storage** (`services/storage`) | `cwe-storage` — a minimal HTTP node serving real content fragments, a byte-accounting ledger keyed by (session, chunk), and receipt co-signing against its own ledger (never a caller-supplied count) | ✅ H5 (cycle 1) |
-| **Settlement** (`services/settlement`) | reads events, opens commitments, runs DAPR, commits Merkle root; routes signed → direct payout, fingerprint → escrow; dual-mode: legacy disclosure-file path (pre-ZK demos) or event mode paying from Groth16-proven usage weights (`make zk-demo`); event mode also verifies a co-signed receipts bundle to compute real per-(user, work) bandwidth credibility (`make bandwidth-demo`) | ✅ Phase 1 · H1 · H2 · H5 |
+| **Bandwidth receipts** (`libs/receipt`) | `cwe-receipt` — the co-signed `Receipt` tuple binding **content position** (`work_id`, `consumer`, `node`, `chunk_index`, `bytes`, `epoch`; session/chunk nonces removed), RFC 8785 canonical bytes, EIP-191 sign/recover, and a `(consumer, work_id, chunk_index)` anti-replay/credit dedup key; portable, shared by the storage node, the consumer, and settlement | ✅ H5 (cycle 1·2) |
+| **Storage** (`services/storage`) | `cwe-storage` — a minimal HTTP node serving real content fragments by chunk index, a ledger keyed by `(consumer, work, chunk_index)` that credits a chunk only once fully streamed to the transport, and receipt co-signing against its own ledger (never a caller-supplied count) | ✅ H5 (cycle 1·2) |
+| **Settlement** (`services/settlement`) | reads events, opens commitments, runs DAPR, commits Merkle root; routes signed → direct payout, fingerprint → escrow; dual-mode: legacy disclosure-file path (pre-ZK demos) or event mode paying from Groth16-proven usage weights (`make zk-demo`); event mode also verifies a co-signed receipts bundle — deduped by chunk, floored by a per-user per-epoch evidence minimum, rated from the on-chain `CWERegistry.bandwidthRate` — to compute real per-(user, work) bandwidth credibility (`make bandwidth-demo`, six acts) | ✅ Phase 1 · H1 · H2 · H5 |
 | **Browser extension** (`clients/browser-ext`) | Rust→WASM core + MV3 shell; local accounting, price cap, settle flow; two-tier recognition (signed content + fingerprint fallback) | ✅ Phase 1 · H1 |
 | **Discovery Hub** (`services/discovery-hub`) | signed, chain-anchored manifest ingest; content-id (Tier 1) + fingerprint nearest-match (Tier 2) resolve; search/trending; OpenAPI | ✅ Phase 2·1 · H1 |
 | **Player agent** (`clients/player-plugin`) | native Rust `cwe-player`: symphonia decode → two-tier recognition → price cap → accrual → on-chain settle; `play`/`status`/`settle`/`fingerprint` | ✅ Phase 2·2 |
@@ -41,12 +41,12 @@ seam designed for drop-in replacement:
 | Fingerprinting | Haitsma-Kalker perceptual (gain-invariant); production robustness (re-encode, landmark/chromaprint) still to come | `fingerprinting_specification.md` |
 | Payout weighting | `minutes·price·region`, largest-remainder split | `DAPR_usage_aggregation_protocol.md` (bandwidth, diminishing returns, diversity) |
 | Settlement trust | single trusted aggregator commits a Merkle root | `rollup_aggregation_and_settlement_Interface_specification.md` |
-| Storage | a single real `cwe-storage` HTTP node serving actual content bytes and co-signing receipts against its own serving ledger; swarm distribution, redundancy, availability/proof-of-storage, and node discovery are still to come | `client-storage_handshake_specification.md`, `storage_node_policy_and_compliance_specification.md` |
+| Storage | a single real `cwe-storage` HTTP node serving actual content bytes by chunk index, crediting a chunk only once fully delivered, and co-signing receipts against its own serving ledger; swarm distribution, redundancy, availability/proof-of-storage, and node discovery are still to come | `client-storage_handshake_specification.md`, `storage_node_policy_and_compliance_specification.md` |
 | Identity | ✅ verifiable credentials (issuer set, attest/revoke, expiry) via `CWEIdentity`; real eID/proof-of-personhood/OIDC/DID-JSON-LD still to come | SSI/VC (creator registration, threat models) |
 | Tiers | tier tied to wallet address | `tier_capability_token_format.md` |
 | Epoch | fixed 30-day window | `epoch_beacon_specification.md` |
 | Discovery | resolution + basic search | federation, differential privacy, DAPR-fed ranking, reputation |
-| Anti-fraud | fingerprint earnings escrow + challenge window + earliest-registration arbiter (jury seam); tier split still disclosure-asserted; a claim of usage backed by zero co-signed bytes is now a live strict loss (real per-(user, work) bandwidth credibility from verified receipts, not a hand-set demo value) | `anti-fraud_and_bandwidth_receipt_protocol.md` |
+| Anti-fraud | fingerprint earnings escrow + challenge window + earliest-registration arbiter (jury seam); tier split still disclosure-asserted; a claim of usage backed by zero co-signed bytes is a live strict loss, re-fetching one chunk under fresh nonces no longer amplifies (chunk-index dedup), and a per-user per-epoch evidence floor guts a dust-weight claim (real per-(user, work) bandwidth credibility from verified receipts, not a hand-set demo value); crediting still only proves bytes reached the client's transport, not that the application consumed them, and a colluding credentialed node can still sign for content it never served | `anti-fraud_and_bandwidth_receipt_protocol.md` |
 | Provenance | multi-party consent (each payee EIP-191-signs their share); content-id ownership | signed-exact beats fingerprint; arbitration jury for the residual case |
 
 ---
@@ -155,49 +155,79 @@ track:
   event mode verifies both signatures, the node credential, and anti-replay, then
   computes a real per-(user, work) bandwidth credibility that feeds `cwe_dapr`'s
   per-row discount (neutral when a receipts bundle is absent, so the legacy demos are
-  bit-for-bit unchanged). `RATE(W)` — the "bytes per unit weight" expectation — is an
-  aggregator deploy-config constant this cycle, fails closed (credibility 0) on a
-  missing/zero rate rather than failing open, and is never read from the receipts
-  bundle. `make bandwidth-demo` proves three things end to end: an honest download
-  pays in full; a puppet-work claim backed by zero bytes is now a live strict loss (fee
-  burned, claimant earns nothing); and a node lacking the storage-node credential has
-  its receipts rejected outright. *Deferred:* a ZK bandwidth proof (hide which
-  works/peers and per-work bytes), a peer-diversity proof, the full P2P storage swarm
+  bit-for-bit unchanged). `make bandwidth-demo` proves three things end to end: an
+  honest download pays in full; a puppet-work claim backed by zero bytes is now a live
+  strict loss (fee burned, claimant earns nothing); and a node lacking the
+  storage-node credential has its receipts rejected outright. Review then found two
+  ways to satisfy that strict-loss requirement without genuinely moving content —
+  fetch-and-discard and a dust-weight credibility floor — both documented and deferred
+  rather than closed; **cycle 2 below closes both.**
+- ✅ **H5 — cycle 2 (credibility integrity)**
+  (`anti-fraud_and_bandwidth_receipt_protocol.md`,
+  `docs/superpowers/specs/2026-07-26-h5-cycle2-credibility-integrity-design.md`):
+  closes cycle 1's two documented deterrent gaps and graduates `RATE(W)` off
+  aggregator config onto the chain.
+  - **Chunk dedup.** Receipts now bind `chunk_index` — content position, not session
+    position — so the anti-replay/credit dedup key becomes `(consumer, work_id,
+    chunk_index)`. `session_nonce`/`chunk_nonce` are removed, not retained: re-fetching
+    one chunk any number of times credits it once.
+  - **Delivery-gated crediting.** The storage node's ledger is written only once a
+    chunk has been streamed to completion; a transfer abandoned part-way credits
+    nothing, and a genuine failure is free to retry because chunk dedup makes retrying
+    idempotent.
+  - **Per-user, per-epoch evidence floor.** `epoch_factor(U) = clamp(Σ_W
+    verified_bytes(U,W) · 1e6 / MIN_EPOCH_BYTES, 0, 1e6)` multiplies the per-row
+    credibility ratio (`MIN_EPOCH_BYTES` defaults to one 131_072-byte chunk). An
+    honest light user clears it on ordinary listening; a dust claim does not — measured
+    in the demo, a claim that previously recovered its whole tier fee now burns
+    99.9993% of it.
+  - **`RATE(W)` on-chain.** `CWERegistry.bandwidthRate` (additive setter/getter,
+    registrant-only), protocol-clamped to `[60_000, 2_000_000_000]` bytes per 1e12
+    weight, mirrored in the signed manifest and validated on ingest; the aggregator's
+    `RATES` config file is retired.
+  - `make bandwidth-demo` is now **six acts** (honest download, never downloaded,
+    refetch amplification, dust weight, unset rate, uncredentialed node), asserting
+    both the byte-level mechanism and the payout outcome so a wrong-reason pass can't
+    masquerade as proof.
+
+  Closing those two gaps replaces them with **four honest residuals** — stated
+  precisely, because the natural phrasing overstates each one:
+  1. **Transport-accepted, not application-consumed.** Crediting establishes that
+     bytes left the server and were accepted by the client's transport, not that the
+     client did anything with them. **Permanently out of scope, not deferred:**
+     unachievable over HTTP and not meaningful for a bandwidth measure regardless,
+     since a client that receives and discards has still paid the bandwidth.
+  2. **Sub-chunk works.** Because the floor is absolute, a user whose entire epoch is
+     a single work smaller than one chunk (~8 seconds of audio) is partially
+     discounted despite consuming it in full. A deliberate trade: a relative floor
+     would remove the penalty but also hands a dust claimant a factor of 1.0.
+  3. **The floor is cross-work, so its deterrent is a cost, not a barrier.** It sums a
+     user's evidence across all works (`Σ_W`), so 128 KiB of *any* content satisfies
+     it. A dust claimant still needs one verified byte of the claimed work — which
+     still requires a credentialed node to serve and co-sign it — plus 128 KiB of
+     anything else per epoch: a real, recurring per-account cost that makes farming
+     uneconomic at scale, not an absolute barrier to one determined claimant.
+  4. **The per-work credit cap binds a client, not a colluding node.** Against a
+     client acting alone, credit for a (user, work) pair is bounded by the work's real
+     size (an honest node returns an empty body past the end of the content, and each
+     real chunk index is clamped to `CHUNK_SIZE`). It does **not** bind a *colluding
+     credentialed node*, which can sign for indices beyond a work's true extent —
+     that is the boundary the CWEIdentity storage-node credential gates today, and
+     what staking/slashing (still deferred) is for.
+
+  *Deferred, unchanged from cycle 1:* the ZK bandwidth proof (hide which works/peers
+  and per-work bytes), the peer-diversity proof, the full P2P storage swarm
   (distribution, redundancy, availability/proof-of-storage, node discovery), node
-  compliance & staking/slashing, ephemeral-key unlinkability (cycle 1 uses stable
-  credentialed node keys), and `RATE(W)` graduating from deploy config to a
-  manifest/registry field — which needs a protocol-level floor to keep it
-  beneficiary-independent (spec §4.1). *Known limitation, not closed this cycle:*
-  because `expected_bytes = weight · RATE(W) / 1e12` floors to a minimum of one byte,
-  a claim with a very small claimed weight reaches full credibility after verifying a
-  single byte — and because the payout target is scale-invariant, that single-row
-  claimant still recovers 100% of their own fee, the same as an honest claimant who
-  must move ~960 KB for the same credit. This is a *deterrent* gap, not a
-  money-extraction one: the "extract ≤ pay-in" cap still holds (a claimant only ever
-  recovers their own fee) and a credentialed node must still genuinely serve and
-  co-sign that byte. Closing it needs an absolute floor on expected bytes per claim, or
-  weight-magnitude sensitivity in the payout target — deferred as a spec-level decision
-  to a later cycle. *Also found in review, also deferred:* the ledger this node signs
-  from records bytes **read off disk and handed to the response writer**, not bytes
-  actually delivered, and the receipt binds no byte range — so a modified consumer can
-  issue `GET /content/...` requests, never read the response, and still obtain a
-  node-signed receipt for the full count, then repeat under a fresh chunk nonce (the
-  anti-replay key is entirely client-chosen) to accumulate verified bytes far beyond
-  the file's real size. This is strictly cheaper than the dust-weight gap above — it
-  needs no dust-sized weight, just repeated fetch-and-discard — but it is likewise a
-  deterrent gap, not a money-extraction one (same scale-invariant-target, same
-  credentialed-node requirement). The fix is to bind `offset`/`len` into the receipt,
-  dedup by byte range per (user, work), and write the ledger entry only after the body
-  is written; not attempted this cycle. Two smaller items also surfaced: `fragment`
-  (`services/storage/src/lib.rs`) reads a work's ENTIRE content file into memory via
-  `std::fs::read` regardless of the requested window, a memory-exhaustion vector under
-  concurrent requests that must be fixed before any node is publicly reachable; and
-  settlement's event-mode chain layer (`services/settlement/src/chain.rs`) resolves
-  each distinct node's on-chain credential BEFORE checking any receipt signature, with
-  an RPC error aborting settlement — harmless while receipt bundles are
+  compliance & staking/slashing, and ephemeral-key unlinkability. Two smaller review
+  findings also remain open, untouched by this cycle: `fragment_for_chunk`
+  (`services/storage/src/lib.rs`) still reads a work's ENTIRE content file into memory
+  via `std::fs::read` regardless of the requested chunk, a memory-exhaustion vector
+  under concurrent requests that must be fixed before any node is publicly reachable;
+  and settlement's event-mode chain layer (`services/settlement/src/chain.rs`) still
+  resolves each distinct node's on-chain credential BEFORE checking any receipt
+  signature, an RPC error aborting settlement outright — harmless while bundles are
   operator-supplied local files, but a live denial-of-service once consumers submit
-  bundles directly; fix is to verify signatures first and resolve credentials only for
-  surviving nodes.
+  bundles directly.
 - ✅ **H6 — SSI/VC identity**: `CWEIdentity` — a rotatable issuer set grants revocable,
   expiring verifiable credentials; the registry and jury gate on `isValid` instead of
   owner allowlists (both removed). Removing an issuer invalidates all their credentials
@@ -228,7 +258,7 @@ flowchart LR
   H1 --> H3[H3 Full DAPR + anti-fraud ✅]
   H1 --> P23[2.3 Arbitration ✅]
   H3 --> H9
-  H3 --> H5[H5 Storage + bandwidth receipts ✅ cycle 1]
+  H3 --> H5[H5 Storage + bandwidth receipts ✅ cycle 1-2]
   H6[H6 SSI identity ✅] --> P3[Phase 3 DMF]
   P22 --> P3
   H2[H2 ZK proofs ✅ cycle 1] --> H4[H4 Decentralised settlement]
@@ -240,11 +270,13 @@ Critical enablers: **H1 (recognition & ownership)** ✅, **H6 (identity)** ✅, 
 **H2 (ZK usage proofs, cycle 1)** ✅ are in — recognition/provenance/escrow plus a
 credential layer that gates registration and graduates the jury (unblocking
 **Phase 3**), and a real integrity proof replacing the disclosure file's trust
-assumption for usage. **H5 (storage + real bandwidth receipts, cycle 1)** ✅ turns H3's
-neutral bandwidth-credibility input live, off the same DAPR seam. **H4 (decentralised
-settlement)** is the remaining trust-minimisation piece, and a second H2 cycle
-(work-identity blinding, the manifest/tier circuits, cross-epoch unlinkability, a real
-beacon, and migrating the legacy demos) can trail the feature work.
+assumption for usage. **H5 (storage + real bandwidth receipts)** ✅ turns H3's neutral
+bandwidth-credibility input live off the same DAPR seam, and cycle 2 closes both
+deterrent gaps cycle 1 left open (fetch-and-discard, dust weight) while moving
+`RATE(W)` on-chain. **H4 (decentralised settlement)** is the remaining
+trust-minimisation piece, and a second H2 cycle (work-identity blinding, the
+manifest/tier circuits, cross-epoch unlinkability, a real beacon, and migrating the
+legacy demos) can trail the feature work.
 
 ---
 
@@ -252,11 +284,12 @@ beacon, and migrating the legacy demos) can trail the feature work.
 
 Ranked by value-per-effort given what exists. **Phase 2 is complete** (Discovery Hub,
 player agent, arbitration jury); **H3 (DAPR + anti-fraud)**, **H6 (identity)**,
-**H2 cycle 1 (ZK usage proofs)**, and now **H5 cycle 1 (storage + real bandwidth
-receipts)** have landed — so the recognition/provenance/escrow/payout core, a
-credential layer, a real on-chain integrity proof for usage, and a live bandwidth-
-credibility signal are all in place, and the next moves are first Phase 3 groundwork
-and the remaining trust-minimisation items:
+**H2 cycle 1 (ZK usage proofs)**, and now **H5 cycles 1–2 (storage + real bandwidth
+receipts, credibility integrity)** have landed — so the recognition/provenance/
+escrow/payout core, a credential layer, a real on-chain integrity proof for usage,
+and a bandwidth-credibility signal with its two documented deterrent gaps closed are
+all in place, and the next moves are first Phase 3 groundwork and the remaining
+trust-minimisation items:
 
 1. **Phase 3 — Creator DMF.** Now unblocked by H6 identity: creator shops, gigs,
    split-pay, a signed service registry, SSI/OIDC auth.
@@ -265,17 +298,13 @@ and the remaining trust-minimisation items:
    cross-epoch unlinkability, a real randomness beacon (VRF/drand) for
    `CWEEpochBeacon`, and migrating the four legacy demos plus the player off the
    disclosure path onto real proofs.
-3. **H5 — cycle 2 (deferred from cycle 1).** Scoped and prioritised by the two
-   deterrent gaps cycle 1 documented rather than closed — both agreed for this cycle:
-   an **absolute floor on expected bytes** per claim (or weight-magnitude sensitivity
-   in the payout target), so a dust-weight claim cannot reach full credibility off a
-   single byte; and **binding `offset`/`len` into the receipt** with per-range dedup,
-   plus writing the node's ledger entry only after the response body is flushed, so
-   receipts attest bytes *delivered* rather than bytes *read* and cannot be minted by
-   fetch-and-discard. Alongside those: the ZK bandwidth proof (hide which works/peers
-   and per-work bytes), a peer-diversity proof, the full P2P storage swarm, node
-   compliance & staking/slashing, ephemeral-key unlinkability, and graduating
-   `RATE(W)` from deploy config to a manifest/registry field with a protocol floor.
+3. **H5 — cycle 3 (deferred from cycle 2).** The ZK bandwidth proof (hide which
+   works/peers and per-work bytes), a peer-diversity proof, the full P2P storage
+   swarm, node compliance & staking/slashing (the boundary cycle 2 identified for a
+   colluding credentialed node), and ephemeral-key unlinkability. Two smaller review
+   findings remain open alongside these: the whole-file read in
+   `fragment_for_chunk` and settlement resolving a receipt's node credential before
+   checking its signature.
 4. **H4 — Decentralised settlement.** Rollup/multi-aggregator model, now that event
    mode gives the aggregator a proof-backed usage signal to build on.
 5. **Follow-ons:** the reputation→hub-ranking wiring (H3 fast-follow); the player

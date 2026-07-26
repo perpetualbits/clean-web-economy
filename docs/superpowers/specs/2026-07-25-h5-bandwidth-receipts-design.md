@@ -66,6 +66,11 @@ compute a **real per-(user, work) bandwidth-credibility** that feeds DAPR — so
   expected bytes per claim, or weight-magnitude sensitivity in the payout target
   itself; both are spec-level decisions. **Deferred to H5 cycle 2** (agreed
   2026-07-25), where closing this is a scoping driver rather than a nice-to-have.
+
+  **Closed in cycle 2** (2026-07-26): an absolute per-user, per-epoch evidence floor
+  (`MIN_EPOCH_BYTES`) now multiplies the per-row ratio, so a dust-weight claim burns
+  almost all of its fee instead of clearing at full credibility — see
+  `docs/superpowers/specs/2026-07-26-h5-cycle2-credibility-integrity-design.md` §3.3.
 - **Unmetered fragment requests / receipts attest reads, not delivery** *(found in
   review, deliberately deferred — not a gap the team missed)*: the ledger
   `services/storage/src/main.rs` signs from records bytes **read off disk and handed
@@ -91,6 +96,12 @@ compute a **real per-(user, work) bandwidth-credibility** that feeds DAPR — so
   been written — a spec-level change, not attempted here. **Deferred to H5 cycle 2**
   (agreed 2026-07-25), where it is the highest-priority item of the two gaps, being
   the cheaper attack.
+
+  **Closed in cycle 2** (2026-07-26): receipts now bind `chunk_index` (content
+  position) and dedup on `(consumer, work_id, chunk_index)`, and the storage node
+  credits a chunk only once it has been streamed to completion — see
+  `docs/superpowers/specs/2026-07-26-h5-cycle2-credibility-integrity-design.md`
+  §3.1–§3.2.
 - **Whole-file reads in `fragment`** (`services/storage/src/lib.rs`): regardless of
   the requested `offset`/`len` window, `fragment` loads the ENTIRE content file into
   memory via `std::fs::read` before slicing out the requested window, so concurrent

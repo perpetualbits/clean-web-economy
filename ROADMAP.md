@@ -54,23 +54,34 @@ Runs alongside the feature phases.
   and the storage-node credential to compute a real per-(user, work) bandwidth
   credibility that feeds `cwe-dapr`'s discount, turning H3's neutral input live
   (`make -C ops bandwidth-demo`) — a zero-byte usage claim is now a strict loss.
-  *Known gap:* a very small claimed weight can still reach full credibility off one
-  verified byte, so a dust-weight puppet claim isn't deterred the way an honest claim
-  is. *Also known:* receipts attest bytes read, not delivered, and bind no byte range,
-  so a modified client can accumulate verified bytes via repeated fragment
-  fetch-and-discard requests — strictly cheaper than the dust-weight gap, and
-  likewise a deterrent gap rather than a money leak (full accounting in
-  `docs/roadmap.md`) — see
+  Review then found two ways to satisfy that requirement without genuinely moving
+  content (a dust-weight floor, fetch-and-discard); both documented and deferred to
+  cycle 2 — see
   `docs/superpowers/specs/2026-07-25-h5-bandwidth-receipts-design.md`
+- [x] **H5 — Credibility integrity (cycle 2)** ✅ — closes both of cycle 1's
+  documented gaps: receipts now bind content position (`chunk_index`) and dedup on
+  `(consumer, work_id, chunk_index)`, so re-fetching a chunk credits it once; the
+  node credits a chunk only once fully delivered; and an absolute per-user,
+  per-epoch evidence floor (`MIN_EPOCH_BYTES`) multiplies the per-row credibility, so
+  a dust-weight claim burns almost its entire fee instead of clearing at full credit.
+  `RATE(W)` also graduates from aggregator config to an on-chain, protocol-clamped
+  `CWERegistry.bandwidthRate`, mirrored in the signed manifest
+  (`make -C ops bandwidth-demo`, now six acts). *Honest residuals, not closed:*
+  crediting proves bytes reached the client's transport, not that the application
+  consumed them (permanently out of scope, not deferred); a user whose whole epoch
+  is a single work smaller than one chunk is partially discounted despite consuming
+  it fully; the floor is cross-work, so it deters via a recurring per-account cost
+  rather than an absolute barrier; and the per-work credit cap binds a client acting
+  alone, not a colluding credentialed node — see
+  `docs/superpowers/specs/2026-07-26-h5-cycle2-credibility-integrity-design.md`
 
 Still to come: H2 cycle 2 (work-identity blinding, manifest-signature and
 tier-eligibility circuits, cross-epoch unlinkability, a real randomness beacon,
-migrating the legacy demos onto real proofs), H5 cycle 2 (closing both known gaps
-above — an absolute floor on expected bytes, and range-bound receipts recorded only
-after delivery — plus the ZK bandwidth proof, peer-diversity proof, full P2P storage
-swarm, node compliance/staking, ephemeral-key unlinkability), decentralised
-settlement, tier capability tokens, an epoch beacon
-upgrade, discovery v2, and security/legal hardening. Details and spec mapping in
+migrating the legacy demos onto real proofs), H5 cycle 3 (the ZK bandwidth proof,
+peer-diversity proof, full P2P storage swarm, node compliance/staking — the boundary
+cycle 2 identified for a colluding node — and ephemeral-key unlinkability),
+decentralised settlement, tier capability tokens, an epoch beacon upgrade, discovery
+v2, and security/legal hardening. Details and spec mapping in
 [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Phase 3 — DMF
