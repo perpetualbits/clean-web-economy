@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cwe_dapr::RawRow;
-use cwe_receipt::{normalize_addr, Receipt, ReceiptBundle, SignedReceipt};
+use cwe_receipt::{normalize_addr, Receipt, ReceiptBundle, SignedReceipt, CHUNK_SIZE};
 
 /// The denominator of the `RATE(W)` rate constant: a rate is expressed as bytes
 /// per `RATE_SCALE` units of proven weight.
@@ -48,6 +48,19 @@ pub const RATE_SCALE: u128 = 1_000_000_000_000;
 /// mint additional evidence. See the `same_chunk_from_two_nodes_counts_once`,
 /// `refetching_one_chunk_credits_it_once` and `distinct_chunks_accumulate`
 /// tests below.
+///
+/// Each accepted receipt's `bytes` is clamped to [`CHUNK_SIZE`] before it is
+/// added to the running total. Dedup caps the number of DISTINCT chunk
+/// indices a (consumer, work) pair can accumulate, but `chunk_index` and
+/// `bytes` are both attacker-controlled `u64`s with nothing else constraining
+/// their relationship — without this clamp, one credentialed-but-colluding
+/// node could co-sign a single receipt naming `chunk_index: 0` and an
+/// arbitrarily large `bytes`, clearing the entire per-work cap (and the
+/// absolute per-epoch evidence floor) in one receipt. An honest chunk's true
+/// size never exceeds `CHUNK_SIZE` (only a work's final chunk is ever
+/// SHORTER), so the clamp costs nothing on any genuine receipt and is what
+/// makes the "total credit is capped at the work's content size" property
+/// (spec §3.1) real rather than nominal.
 pub fn accept_receipts(
     bundle: &ReceiptBundle,
     epoch: u64,
@@ -97,11 +110,15 @@ pub fn accept_receipts(
             continue;
         }
 
-        // Accepted: attribute the bytes to this (consumer, work) pair.
+        // Accepted: attribute the bytes to this (consumer, work) pair, clamped
+        // to one chunk's worth. Without this clamp `bytes` is unbounded and
+        // unrelated to `chunk_index`, so a single colluding receipt could claim
+        // an arbitrarily large amount and blow through the per-work cap dedup
+        // is supposed to enforce.
         let entry = totals
             .entry((normalize_addr(&r.consumer), r.work_id.to_ascii_lowercase()))
             .or_insert(0);
-        *entry = entry.saturating_add(r.bytes as u128);
+        *entry = entry.saturating_add(r.bytes.min(CHUNK_SIZE) as u128);
     }
 
     totals
@@ -411,8 +428,31 @@ mod tests {
         assert_eq!(got.get(&key).copied(), Some(2500));
     }
 
-    /// A replayed chunk (same node, session and chunk nonce) is counted once,
-    /// even if the replay claims more bytes.
+    /// A receipt claiming more than one chunk's worth of bytes is clamped to
+    /// `CHUNK_SIZE`. Without this clamp, a single colluding receipt naming
+    /// `chunk_index: 0` and a huge `bytes` could claim far more than a work's
+    /// actual size in one shot — dedup only bounds the number of DISTINCT
+    /// chunk indices, not what each one is allowed to claim.
+    #[test]
+    fn oversized_chunk_claim_is_clamped_to_chunk_size() {
+        let node = PrivateKeySigner::random();
+        let consumer = PrivateKeySigner::random();
+        let bundle = ReceiptBundle {
+            epoch: 5,
+            receipts: vec![signed(&node, &consumer, 131_072_000, 5, 0)],
+        };
+        let got = accept_receipts(&bundle, 5, &all_ok);
+        let key = (format!("{:#x}", consumer.address()), work());
+        assert_eq!(
+            got.get(&key).copied(),
+            Some(cwe_receipt::CHUNK_SIZE as u128)
+        );
+    }
+
+    /// A replayed chunk (same `(consumer, work_id, chunk_index)` dedup key) is
+    /// counted once, even if the replay claims more bytes. The node is
+    /// deliberately not part of the key, so this holds however many times, and
+    /// from whichever node, the same block is re-served.
     #[test]
     fn drops_a_replayed_chunk() {
         let node = PrivateKeySigner::random();
@@ -567,6 +607,29 @@ mod tests {
         assert_eq!(
             row_credibility_ppm(&rows, &BTreeMap::new(), &rates, &full),
             vec![1_000_000]
+        );
+    }
+
+    /// A zero-WEIGHT row belonging to a user with NO epoch evidence at all
+    /// takes that user's (missing → zero) epoch factor, not a flat neutral.
+    /// This pins the `return factor` branch introduced alongside
+    /// `epoch_factor_ppm`: `zero_weight_row_is_neutral` above cannot tell this
+    /// apart from the old `return 1_000_000` behaviour because it passes an
+    /// all-neutral factor map, under which both branches produce the same
+    /// number. This test uses an EMPTY factor map instead, so it fails if the
+    /// zero-weight branch is ever reverted to a flat neutral.
+    #[test]
+    fn zero_weight_row_with_no_epoch_evidence_is_zero() {
+        let rows = vec![RawRow {
+            user: "0xu".into(),
+            work: work(),
+            raw: 0,
+        }];
+        let mut rates = BTreeMap::new();
+        rates.insert(work(), 8192u64);
+        assert_eq!(
+            row_credibility_ppm(&rows, &BTreeMap::new(), &rates, &BTreeMap::new()),
+            vec![0]
         );
     }
 
