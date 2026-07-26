@@ -345,8 +345,8 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      # `jq` builds the rates file and reads the settlement's proof output;
-      # `curl` waits for the storage nodes to come up.
+      # `jq` reads the settlement's proof and bandwidth-sidecar output for the
+      # demo's assertions; `curl` waits for the storage nodes to come up.
       - name: Install jq and curl
         run: sudo apt-get update && sudo apt-get install -y jq curl
 
