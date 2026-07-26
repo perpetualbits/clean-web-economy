@@ -24,6 +24,10 @@
 #                         but the aggregator's content-position dedup key
 #                         collapses all hundred receipts down to one chunk's
 #                         worth of evidence — re-fetching cannot amplify credit.
+#                         The claim still earns a small, real, non-zero payout
+#                         (one chunk against a much larger claimed expectation),
+#                         proving the cap has genuine payout consequence rather
+#                         than merely leaving a usage claim unattributed.
 #   Act 4 (dust weight):  the claimed work is smaller than a single chunk (1
 #                         KiB), so even a fully honest download can never clear
 #                         the absolute per-epoch evidence floor. The floor guts
@@ -243,18 +247,22 @@ STORAGE_URL=http://127.0.0.1:8546 WORK_ID=${WORK_G,,} PRIVATE_KEY=$U2 EPOCH=$EPO
 # =========================================================================
 # ACT 3 — re-fetch: the SAME chunk downloaded a hundred times
 # =========================================================================
-# Deliberately NO zk_submit here. This act isolates the receipt-dedup
-# mechanism from the DAPR weight-discount math the other five acts exercise:
-# with a genuine (rate, weight) pair in play, a single truthfully-delivered
-# 128 KiB chunk is worth a small but strictly positive fraction of a claimed
-# row's expectation (128 KiB against the demo's 2.7 MB expectation is itself
-# only ~4.9% — nowhere near the 100 chunks' worth a naive replay would be
-# after if dedup did not exist, but not exactly zero either). Proving the
-# dedup key rather than a particular ratio is the point: U3 never files a
-# usage claim for WORK_R at all, so there is no row for its fee to attach to
-# and the claim is worth nothing, while the receipts themselves are verified
-# on their own terms — evidencing that the "credited once" property holds at
-# the ledger level regardless of what any usage proof would have claimed.
+step "ACT 3 — the same chunk re-fetched 100 times"
+# U3 DOES file a usage claim for WORK_R, same as every other act — an act
+# whose payout assertion passes only because no row exists to discount would
+# prove "we forgot to submit usage," not "re-fetch amplification is capped."
+# With the claim in place the arithmetic is fully deterministic: proven
+# weight 45e12, rate 60000 => expected 2_700_000 bytes; 100 re-fetches of
+# chunk 0 dedup to ONE chunk's worth of evidence (131_072 bytes, not
+# 100 x 131_072); row ratio 131_072 * 1e6 / 2_700_000 ~= 48_545 ppm; U3's
+# epoch evidence (131_072 bytes, exactly the floor) saturates the epoch
+# factor at neutral, so the row ratio passes through unscaled => credit is
+# ~4.85% of the tier fee. That is a real, nonzero, but overwhelmingly
+# discounted payout — proving BOTH that dedup caps the evidence at one
+# chunk AND that the cap has a genuine payout consequence, not merely an
+# absent one.
+RPC_URL=$RPC PRIVATE_KEY=$U3 DEPLOYMENTS=$DEP TIER=$LIGHT WORK_ID=$WORK_R \
+  "$ZK_SUBMIT" --mode honest || fail "re-fetch submit did not succeed"
 STORAGE_URL=http://127.0.0.1:8546 WORK_ID=${WORK_R,,} PRIVATE_KEY=$U3 EPOCH=$EPOCH \
   REPEATS=100 OUT="$WORKDIR/r3.json" "$CLIENT" --mode refetch \
   || fail "re-fetch consumer failed to collect receipts"
@@ -323,10 +331,20 @@ B2=$(bytes_of "$(cast wallet address $U2)" "${WORK_G,,}")
 [ "$B2" = "0" ] || fail "undownloaded chunks were credited $B2 bytes, expected 0"
 [ "$(credit_of "${WORK_G,,}")" = "0" ] || fail "work with no downloads earned credit"
 
-# Act 3 — refetch: 100 receipts for one chunk collapse to a single chunk's bytes.
+# Act 3 — refetch: 100 receipts for one chunk collapse to a single chunk's
+# bytes, and that cap has a real (not merely absent) payout consequence.
 B3=$(bytes_of "$(cast wallet address $U3)" "${WORK_R,,}")
+# (1) The load-bearing assertion: without dedup this would be 100 x 131072.
 [ "$B3" -le 131072 ] || fail "re-fetching amplified evidence to $B3 bytes"
-[ "$(credit_of "${WORK_R,,}")" = "0" ] || fail "re-fetch work earned credit"
+C3=$(credit_of "${WORK_R,,}")
+# (2) Strict and nonzero: the row exists and was discounted, not absent —
+# an absent row would pass this act for the wrong reason (no usage claim to
+# discount at all, rather than dedup capping a real one).
+[ "$C3" -gt 0 ] || fail "re-fetch work earned no credit at all; is its usage claim missing?"
+# (3) A band, not an exact figure, so the assertion isn't brittle to
+# apportionment rounding: more than 90% of the fee must still be burned.
+[ "$C3" -lt $((FEE / 10)) ] \
+  || fail "re-fetch work earned $C3, expected the chunk cap to burn over 90% of $FEE"
 
 # Act 4 — dust: real but tiny evidence, so the absolute floor guts the payout.
 B4=$(bytes_of "$(cast wallet address $U4)" "${WORK_D,,}")
@@ -346,7 +364,7 @@ B5=$(bytes_of "$(cast wallet address $U5)" "${WORK_N,,}")
 
 echo "  Act 1 honest:      paid $(cast to-unit "$(credit_of "${WORK_W,,}")" ether) ETH, $(bytes_of "$(cast wallet address $U1)" "${WORK_W,,}") bytes verified"
 echo "  Act 2 no-download: paid 0 ETH, 0 bytes verified"
-echo "  Act 3 re-fetch:    paid 0 ETH, $B3 bytes verified (capped at one chunk)"
+echo "  Act 3 re-fetch:    paid $(cast to-unit "$C3" ether) ETH of $(cast to-unit $FEE ether) ETH, $B3 bytes verified (capped at one chunk)"
 echo "  Act 4 dust:        paid $(cast to-unit "$C4" ether) ETH of $(cast to-unit $FEE ether) ETH, $B4 bytes verified"
 echo "  Act 5 unset rate:  paid 0 ETH, $B5 bytes verified (fails closed on a missing rate)"
 echo "  Act 6 rogue node:  paid 0 ETH, 0 bytes verified (uncredentialed node)"
